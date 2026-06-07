@@ -1,0 +1,64 @@
+# 主方法默认超参 —— 天气区制感知 + NWP 误差订正的软门控多专家光伏日前预测
+# 每个消融开关都直通一个变体（见 configs/ablation/）；只覆盖相关项即可。
+
+seed: 0                      # 单次运行种子；多种子由 train.seeds 驱动
+
+data:
+  raw_dir: dataset                  # 原始 PVOD（station*.csv + metadata.csv）
+  processed_dir: data/processed     # 预处理缓存（gitignored）
+  look_back: 192                    # 回看 2 天（96 点/天 × 2）；敏感性附 384，Part3 §0.7
+  horizon: 96                       # 日前 1 天（15min × 96）
+  split: [0.7, 0.1, 0.2]            # 时间顺序 train/val/test
+  stations: [station00, station01, station02, station03, station04,
+             station05, station06, station07, station08, station09]
+
+fcm:                          # 模块 A：FCM 软天气区制
+  K: 3                        # 区制数（消融 G 扫 2-5）
+  m: 2.0                      # 模糊度 η
+  feature_cols: [nwp_globalirrad, nwp_temperature, nwp_humidity]  # 仅 NWP 侧（推理可得）
+  error: 0.005
+  maxiter: 1000
+
+vmd:                          # 模块 C1：因果滑窗 VMD
+  K_modes: 5                  # 模态数
+  alpha: 2000                 # 带宽惩罚
+  tau: 0.0                    # 噪声容忍（vmdpy）
+  DC: 0                       # 不强制 DC 分量
+  init: 1                     # 均匀初始化中心频率
+  tol: 1.0e-7
+  window: 192                 # 滑窗长（默认 = look_back）
+  stride: 1
+  vmd_source: power           # 对历史功率做因果 VMD
+
+model:
+  expert:
+    type: gru                 # gru / tcn（消融 / 加分）
+    hidden: 64
+    num_layers: 1
+    tcn_kernel: 3
+    tcn_levels: 3
+  corrector_hidden: 128
+  gate_mode: soft             # soft / hard（消融 C）
+  single_expert: false        # 消融 D（K=1 单专家）
+  use_vmd: true               # 消融 F 关
+  leak_vmd: false             # 消融 E 开（全序列 VMD 泄漏演示）
+  use_corrector: true         # 消融 B 关
+
+train:
+  lr: 1.0e-3                  # Adam，Part3 §0.7
+  batch_size: 64
+  patience: 10                # 早停
+  max_epochs: 100
+  weight_decay: 0.0
+  grad_clip: 5.0
+  finetune_corrector: false   # 第二阶段是否解冻订正器（默认冻结）
+  seeds: [0, 1, 2, 3, 4]      # 5 种子均值±std
+  device: cuda
+
+paths:
+  checkpoints: results/checkpoints
+  logs: logs
+  eval: results
+  figures: results/figures
+  interpret: results/interpret
+  ablation: results/ablation

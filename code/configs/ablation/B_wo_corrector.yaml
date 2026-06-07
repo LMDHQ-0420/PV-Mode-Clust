@@ -1,0 +1,3 @@
+# 变体 B：w/o 订正器（RQ1）——直接用原始 NWP
+model:
+  use_corrector: false

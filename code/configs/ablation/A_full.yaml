@@ -1,0 +1,7 @@
+# 变体 A：完整模型（与 default 一致，显式标注）
+model:
+  use_corrector: true
+  gate_mode: soft
+  single_expert: false
+  use_vmd: true
+  leak_vmd: false

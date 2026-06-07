@@ -1,0 +1,1505 @@
+参赛编号：003131
+
+
+
+
+论文题目：A 题 光伏电站发电功率日前预测问题
+            光伏电站发电功率日前预测问题
+
+
+                    摘   要
+
+  为了实现“碳中和、碳达峰”，实现节能减排，光伏发电站得到了广泛应用。
+然而，由于新能源的波动明显，光伏发电功率预测仍是一大难题。本文结合时序
+特征与 NWP 信息，建立 FCM-EMD-tSNE-RF 预测模型，通过划分气象场景、
+分解 NWP 信息，在 10 个光伏电站的真实数据下，验证了该模型传统气象学模
+型有效地提高了光伏发电功率的预测效果，并进一步验证了 NWP 降尺度在光伏
+发电预测场景下的有效性。
+  针对问题一，本文使用光伏电站地理位置信息，构建气象学模型，通过联合
+使用 SPA 模型、Ineichen-Perez 模型、简单各向同性模型，实现了光伏电站发电
+功率的预测，且预测 acc 值在 75%左右。
+  针对问题二，本文使用 RF 模型，通过构建时序特征，有效地提升了光伏电
+站发电功率的预测效果，其 acc 值在 89%左右。
+  针对问题三，本文建立了 FCM-EMD-tSNE-RF 预测模型，使用 FCM 算法
+将辐照度、温度、湿度对其进行聚类，并划分气候场景。对于每一个气候场景，
+使用 EMD 提取气候特征的内在特征，并使用 t-SNE 对 EMD 分解结果进行降维，
+确保特征空间不会过大，最后，融合处理后的 NWP 特征与时序特征，使用 RF
+模型进行预测。结合各评估指标，分析融入 NWP 信息后预测精度能否有效提高，
+并给出相应气候场景的划分方案。其 acc 值在 93%左右。
+  针对问题四，本文使用 EPA5 数据集，通过对 EPA5 进行预处理，并结合二
+维线性插值法获得更高精度的 NWP 数据，将 FCM-EMD-tSNE-RF 预测模型的
+acc 值提高了 1%左右。
+
+
+  关键词：随机森林；模糊 C 均值聚类；经验模态分解；t 分布随机邻域嵌入
+1 问题重述
+1.1 问题背景
+
+  光伏发电能够利用半导体材料的光电效应，把太阳能直接转化为电能。多个
+光伏发电单元共同作用形成的规模化发电设施即为光伏电站。
+  光伏板表面接受到的太阳辐射总量决定了光伏电站的发电功率。由于不同季
+节时太阳倾角发生变化，辐照强度也会产生长周期变化；由于云量、阴雨、雾霾
+等气象因素，辐照强度会发生短周期变化。
+  光伏电站接入电网后会使光伏电站发电功率产生波动，从而影响电网的功率
+平衡和频率调节。精准预测光伏电站的发电功率可以帮助电力调度部门提前准备
+调度决策，来保障电网的功率平衡与运行安全。
+  光伏电站发电功率日前预测是进行预测未来 24 小时至 48 小时的发电功率。
+但光伏电站上方的云量、阴雨、雾霾等气象因素是不确定的，因而导致光伏发电
+功率无法准确预测。目前，提升光伏电站发电功率的预测精度是当前工程领域关
+键技术问题。
+
+1.2 问题重述
+
+  对于问题一，基于各光伏电站的经纬度，计算太阳辐照并推算可发功率，分
+别得出长周期和短周期可发功率特性。根据实际功率与理论可发功率的偏差，分
+析光伏电站发电功率特性。
+  对于问题二，基于历史功率的光伏电站，建立发电功率预测模型，对发电功
+率进行预测，根据附件 1，分别计算各误差指标，分析预测模型的准确性。
+  对于问题三，在问题二的基础上，融入数值天气预报（Numerical Weather
+Prediction, NWP）信息，建立融入 NWP 信息的光伏电站日前发电功率预测模型，
+得到结果并分析评价融入 NWP 信息能否有效提高预测精度，若能有效提高，则
+给出提高预测精度的场景划分方案，并进行验证。
+  对于问题四，由于传统气象预报空间分辨率尺度较大，通常在千米级别，而
+MW 级光伏电站覆盖面积可能小于天气预报的空间尺度。在现有的 NWP 数据基
+础上，通过机器学习、空间插值、统计模型等得到更小空间尺度的气象预报信息
+（NWP 空间降尺度）可否提高光伏功率预测精度。请结合空间降尺度预测结果，
+检验方法的可行性，并分析其原因。
+
+
+2 问题分析
+
+                      1
+2.1 问题一的分析
+
+   本题根据数据集中光伏电站的地理位置信息，可计算得到太阳直射点辐照度、
+光伏板所在位置与太阳的相对位置（太阳高度角、方位角），进而结合光伏板倾
+角，计算光伏板斜面的总辐照度，再结合光伏电站装机容量计算出可发功率。根
+据可发功率和日内波动得出其长周期和短周期变化并进行分析，再计算其与实际
+功率的偏差并进行分析得出结论。
+
+2.2 问题二的分析
+
+   本题要求基于数据集中除去第 2、5、8、11 个月的最后一周的可发功率构建
+训练集，可采取数据驱动的方式，建立基于历史功率的光伏电站日前发电功率预
+测模型，对第 2、5、8、11 个月的最后一周的可发功率进行预测。首先，对时间
+序列数据进行特征提取，建立随机森林预测（Random Forests, RF）模型进行预
+测，得到预测结果，并结合各评估指标，分析预测模型的是否准确。
+
+2.3 问题三的分析
+
+   本题在问题二的基础上，融入 NWP 信息，建立融入 NWP 信息的光伏电站
+日前发电功率预测模型，对第 2、5、8、11 个月的最后一周的可发功率进行预测。
+将辐照度、温度、湿度对其进行模糊 C 均值聚类（Fuzzy C-Means Clustering, FCM），
+并划分气候场景。对于每一个气候场景，使用经验模态分解（Empirical Mode
+Decomposition, EMD）提取气候特征的内在特征，并使用 t 分布随机邻域嵌入（t-
+distributed Stochastic Neighbor Embedding, t-SNE）对 EMD 分解结果进行降维，
+确保特征空间不会过大，最后，融合处理后的 NWP 特征与时序特征，使用 RF
+模型进行预测。结合各评估指标，分析融入 NWP 信息后预测精度能否有效提高，
+并给出相应气候场景的划分方案。
+
+2.4 问题四的分析
+
+   本题在问题三的基础上，对 NWP 数据进行降尺度，进而获得更高精度的
+NWP 数据，并提升模型的预测效果。具体来说，本文使用 EPA5 数据集，通过对
+EPA5 进行预处理，并结合二维线性插值法获得更高精度的 NWP 数据，提高了
+模型的预测效果。
+
+
+3 模型假设
+   假设①：假设任意时刻下，光伏电站均开机且满负荷运行，即假定光伏发电
+站开机容量与装机容量相等。
+
+
+                               2
+      假设②：假设 NWP 的辐照、温度、云量等数据在预测时间范围内是准确且
+可靠的，忽略 NWP 数据本身的误差和不确定性。
+      假设③：在构建气象学模型时，假设预测时间范围内光伏电站所处的位置均
+为晴天，并忽略地形变化或周围环境对太阳辐照的影响。
+
+
+4 定义与符号说明
+                      表 1   符号及其含义
+符号       含义说明                                                单位
+Hi       在 t 时刻下的光伏板总辐照度                                     W·m⁻²
+n        所有样本个数                                              -
+PPi      在 i 时刻下的实际功率                                        MW
+PMi      在 i 时刻下的预测功率                                        MW
+Ci       在 i 时刻下的开机容量                                        kW
+PM       误差统计时段实际功率的平均值                                      -
+PP       误差统计时段预测功率的平均值                                      -
+Bi       在 i 时刻下的预测合格率判定结果                                   -
+
+
+5 数据集和数据评价指标
+5.1 数据来源
+
+      本文使用 T Yao 等人于 2021 年发布的专用于光伏电站功率预测的数据集
+PVOD[1]进行实验，该数据集包含了河北省内 10 个光伏电站 2017~2018 年 96 点
+分时的光伏发电数据，并有对应采样点的 NWP 数据，数据规格如表 2 所示。
+                表 2   本文所使用数据集的数据规格
+数据规格                        参数值
+数据来源                        https://github.com/yaotc/PVODataset
+发电功率和 NWP 数据时间分辨率           15min（标准 96 点分时采样）
+                            水平辐照度（GHI）、法向辐照度（DNI）、
+NWP 属性
+                            温度、湿度、风速、风向、气压
+                            光伏电站经纬度、光伏板斜面朝向、光伏
+其他属性
+                            板斜面倾角
+      对于每一个光伏电站，其所采集数据的起始-截止时间略有不同，且各光伏
+电站的装机容量、地理位置亦不相同，现对该参数进行说明，如所表 3 示，各光
+伏电站的地理位置示意图如图 1 所示。
+
+
+
+                             3
+                    表 3      各光伏电站数据的关键参数
+ 光伏电站        数据起始-截止时间（UTC+08:00）           装机容量（kW）
+ station00   2018.08.16-2019.06.13          6600
+ station01   2018.07.01-2019.06.13          20000
+ station02   2018.07.23-2019.06.10          17000
+ station03   2019.01.12-2019.06.13          20000
+ station04   2018.07.01-2019.06.13          20000
+ station05   2019.03.05-2019.06.13          35000
+ station06   2018.07.14-2019.06.13          15000
+ station07   2018.07.01-2019.06.13          20000
+ station08   2018.07.01-2019.06.13          20000
+ station09   2018.09.26-2019.06.13          20000
+
+                             04
+
+
+
+
+                                   09
+
+                                             01
+                    05
+                   03              00
+                        02
+
+
+
+
+                              06
+
+                    08
+              07
+
+             图 1        10 个光伏电站的位置示意图（河北省）
+
+5.2 数据预处理
+
+    通过对数据集进行探查发现，该数据集情况良好，不存在缺失值，故本文仅
+考虑异常值的处理。本文使用箱线图法判定异常值，具体来说，异常值是指值小
+于 Q1 − 1.5 × IQR 或大于 Q3 + 1.5 × IQR 的数据点，其中，Q1 是第一四分位数，Q3
+           = Q3 − Q1 是四分位距。箱线图如图 2 所示。
+是第三四分位数， IQR
+
+
+
+
+                                        4
+                   图 2    箱线图法判定异常数据点
+             [2]
+  然而，根据文献 ，由于光伏的波动特征，实际上，图 2 中的一些异常数据
+点可能反应了伏的关键特性，其应是开发数据驱动预测模型的关键数据点。因此，
+本文选择保留该数据点。
+
+5.3 评价指标
+
+  为了更好地评估本文的实验效果，本文基于现有数据集，考虑以下模型评价
+指标。
+①均方根误差（RMSE）：
+                                                                2
+                                  1 n  PPi − PMi 
+                        RMSE =      ∑
+                                  n i =1  Ci
+                                                   .                       (1)
+                                                  
+②平均绝对误差（MAE）：
+                                  1 n PPi − PMi
+                         MAE =      ∑ C .
+                                  n i =1
+                                                                            (2)
+                                           i
+
+③平均误差（ME）：
+                                 1 n  PPi − PMi 
+                         ME =      ∑
+                                 n i =1  Ci
+                                                 .                         (3)
+                                                 
+④相关系数（r）：
+                           n
+
+                          ∑ ( P − P )( P − P ) 
+                                 Mi       M       Pi        P
+                   r=     i =1
+                                                                        .   (4)
+                          n                   n
+
+                  Mi M
+             =i 1 =i 1
+                         ∑ (P − P ) ∑ (P − P )
+                                          2
+                                                       Pi       P
+                                                                    2
+
+
+
+⑤准确率（acc）：
+                            (1 − RMSE ) ×100%.
+                        acc =                                               (5)
+
+
+
+                                      5
+⑥合格率（p）：
+                    1 n
+                 =p   ∑ Bi ×100%,
+                    n i =1
+                                                                  (6)
+
+式中， Bi 是 i 时刻的预测合格率判定结果，其计算公式如下：
+
+                           PPi − PMi
+                      1,             < 0.25
+                              Ci
+                 Bi =                          .                 (7)
+                           PPi − PMi
+                      0,      Ci
+                                      ≥ 0.25
+                      
+
+
+6 基于历史功率的光伏电站发电特性分析
+6.1 光伏电站可发功率的理论计算
+
+  为了探究光伏电站的发电特性，本节基于光伏电站的地理位置信息，结合相
+关气象学模型，计算光伏电站的理论可发功率。
+  为了求得某一具体时刻的可发功率，需要计算该时刻的太阳直射点辐照度、
+光伏板所在位置与太阳的相对位置（太阳高度角、方位角），进而结合光伏板倾
+角，计算光伏板斜面的总辐照度。在这一过程中，本文所使用的气象学模型及其
+目的如表 4 所示，示意图见图 3。
+           表 4   本文所使用的气象学模型及其目的
+目的                                所使用的气象学模型
+太阳位置计算                            Solar Position Algorithm（SPA）模型[3]
+晴天辐照度计算                           Ineichen-Perez 模型[4]
+斜面辐照度计算                           简单各向同性模型[5]
+                                                太阳直射点辐照
+
+
+
+
+                                     太阳高度角
+
+
+
+
+                                     太阳方位角   太阳直射点
+
+
+
+
+                             斜面倾角
+
+
+
+
+             图 3    斜面辐照理论计算示意图
+
+
+
+                              6
+       具体来说，该理论计算包含以下流程：
+1) 使用 SPA 模型，结合光伏板的经纬度数据，计算太阳方位角、高度角；
+2) 使用 Ineichen-Perez 模型，结合所求时刻的时间数据，计算得到太阳直射点
+   的晴天辐照度数据；
+3) 使用简单各向同性模型，结合光伏板倾角、光伏板朝向，计算光伏板斜面辐
+       照度数据；
+4)     计算光伏电站在该时刻的可发功率 PMi ，其计算公式如下：
+                                        = H i × Ci .
+                                       PMi                                         (8)
+       值得注意的是，用于本节仅使用光伏电站的位置信息，而天气信息不可知，
+因此，本节假设该地区天气均为晴天，这一假设与 Ineichen-Perez 模型仅能求解
+太阳直射点的晴天辐照度相吻合。
+
+6.2 计算结果与分析
+
+       本文使用 PVLIB-Python 库实现上文所述方法，并分别计算十个光伏电站在
+数据集中包括的全部时间点的可发功率，并对计算结果进行评估，评估结果见表
+5。
+                            表 5   气象学模型的评估结果
+     光伏电站         RMSE        MAE           ME             r      acc (%)      q (%)
+     station00   0.267659   0.200318      -0.1994      0.796786   73.23407   68.13962
+     station01   0.224907   0.144416     -0.09521      0.761105   77.50926   80.34374
+     station02   0.243607   0.160552     -0.15271      0.773666   75.63931   77.50709
+     station03   0.241544    0.16016     -0.15139       0.79339   75.84561   78.59429
+     station04   0.253599   0.177472     -0.04436      0.737125    74.6401   78.53207
+     station05    0.22798   0.140623     -0.13384      0.821128   77.20204   82.37605
+     station06   0.307773   0.241839     -0.24007      0.772362   69.22265    54.7018
+     station07   0.302029   0.223761     -0.22309      0.751939   69.79706   64.51039
+     station08   0.281584   0.197294     -0.19138      0.738414   71.84163   71.02844
+     station09   0.366023   0.302964      -0.3029      0.784071   63.39766   41.31574
+       可以发现，其 acc 值在 63%~78%区间内浮动，可以认为使用气象学模型预
+测光伏电站的可发功率存在一定的实际意义，但其准确率较低。
+       图 4 展示了光伏电站 station00 的预测结果，并按照天聚合。可以看出，太
+阳辐照强度和功率的高低随着季节的变化而波动。夏季（6-8 月），太阳辐照强度
+较高，发电功率较强；而在冬季（11-2 月），太阳辐照强度低，发电功率较弱。
+此外，发电功率在一天中呈现出明显的波动，白天时段功率较高，夜间功率接近
+零。早晚时段发电较少，正午时段 11-13 时发电最强，说明辐照强度的直接影响
+了发电效率。
+
+
+                                            7
+   夏季           冬季               夏季   4月30日
+                                      晴
+
+
+
+
+                                      12月22日
+                                      多云
+
+
+
+
+   图 4   光伏电站 station00 的气象学模型预测结果可视化（按天聚合）
+   分析预测结果，有以下结论：
+1) 夏季光伏电站的发电功率较高，冬季光伏电站的发电功率较低；
+2) 使用气象学模型计算得到的理论可发功率的普遍要大于真实发电功率；
+3) 晴天（如 2019 年 4 月 30 日）较多云（如 2018 年 12 月 22 日）的理论可发
+  功率更接近真实发电功率。
+  基于以上结论，本文可作以下合理猜测：
+1) 由于夏季光伏电站的发电功率明显高于冬季，可以猜测光伏电站的发电功率
+  与温度或辐照度相关；
+2) 晴天情况下，辐照度值较大，可能导致可发功率较大；
+3) 由于本文假设该地区均为晴天，故理论可发功率和实际发电功率的趋势相似。
+  然而实际情况下，该地的天气情况可能略差，导致理论辐照度高于实际辐照
+  度，因此，理论可发功率的普遍要大于实际发电功率。
+
+
+7 基于历史功率的光伏电站日前发电功率预测模型
+7.1 随机森林模型（RF）介绍
+
+   随机森林[6]的基本组成单元是决策树，其基本思想是一种二分递归分割方法，
+在计算中利用二叉树，在一定的分割规则下将样本集分割为两个子样本集，使得
+生成的决策树的每个非叶节点都有两个分枝，在子样本上重复上述，直至不可再
+分割为止。其流程图如图 5 所示。
+
+
+
+
+                         8
+             图 5 随机森林模型预测流程图
+   RF 选取样本时为有放回随机选取，因此具有随机性。不同的树分别学到整
+体的一部分特征，最终通过回归方法取平均值，得到最终的预测结果。由于单棵
+决策树往往容易出现过拟合问题，因此需要通过聚集多个模型来提高预测精度。
+RF 采用的是 Bagging 方法来组合决策树，其基本思想是：利用 Bootstrap 重抽样
+方法从原始样本中抽取多个样本，对每个样本进行决策树建模，然后组合多棵决
+策树的预测，以求出预测结果。
+   对于一个决策树，使用信息增益准则来选取最佳划分点，假定 a 属性有 V 个
+可能的取值 {a1 , a 2 , …, aV } ，则有公式如下：
+                                            V
+                                                 | Dv |
+                    ( D, a ) Ent ( D) − ∑
+                Gain=                                   Ent ( D v ),    (9)
+                                            v =1 | D |
+
+   其中， Ent ( D) 是样本集合 D 的信息熵，则最佳划分属性如下式：
+                          a = max Gain( D, a ).                        (10)
+7.2 归一化
+   由于机器学习模型对多样化数据较为敏感，因此，需要对数据进行归一化。
+本文选择 MAX-MIN 标度法进行归一化，其公式如下：
+                                      xi − min(x)
+                       f ( xi ) =                   ,                  (11)
+                                    max(x) − min(x)
+其中， min(x) 是 x 中的最小值， max(x) 是 x 中的最大值。
+
+7.3 特征工程
+
+   为构建 RF 预测模型，首先需要从原始数据中提取相应特征，由于是时间序
+列数据，特征的提取应具有时间关系，本节所提取的特征如表 6 所示。
+
+
+
+                                        9
+                  表 6    用于 RF 预测模型的特征及其含义
+特征                      含义
+month                   月
+day                     日
+hour                    小时
+minute                  分钟
+rolling_max_i           第 i 个滑动窗口内的最大值
+rolling_min_i           第 i 个滑动窗口内的最小值
+rolling_mean_i          第 i 个滑动窗口内的平均值
+rolling_change_rate_i   第 i 个滑动窗口内的变化率
+   具体来说，需要从光伏发电功率的时间序列数据中提取时间特征，包括月、
+日、小时、分钟和滑动窗口特征，以捕捉其时序变化。滑动窗口特征即使用滑动
+窗口方法计算过去一段时间内的滚动最大值、最小值、平均值和变化率。在本文
+中，窗口大小设置为 4，滑动步长设置为 2，共采集 4 个滑动窗口，这样可以在
+不同时间尺度上捕捉发电功率的动态变化。
+
+7.4 预测结果与分析
+
+   将提取的特征作为输入，训练 RF 模型，模型关键参数如表 7 所示。使用第
+2、5、8、11 个月最后一周的数据作为测试集，对模型进行验证和评估，评估结
+果如表 8 所示，模型在光伏电站 station00 上的预测结果如图 6 所示。
+                        表 7    RF 模型的关键参数值
+参数                      参数值
+树的数量                    100
+随机种子                    42
+交叉验证                    有（5 折交叉验证）
+                         表 8   RF 模型的评估结果
+ 光伏电站         RMSE        MAE         ME          r      acc (%)      q (%)
+ station00   0.103356   0.070554   0.005262   0.848774   89.66441   96.72619
+ station01   0.141969   0.097653   -0.00652   0.855951   85.80309   89.54781
+ station02   0.121280   0.084168   -0.00301   0.859802   87.87198   94.21794
+ station03   0.101284   0.068288   0.000204   0.907596   89.87163   96.07843
+ station04   0.182085   0.124722   -0.00247   0.857108   81.79154    85.9375
+ station05   0.107669   0.062548   0.026144   0.932115   89.23311   95.81281
+ station06   0.110619   0.073445    0.00734   0.779356   88.93813   95.01488
+ station07   0.110803   0.077881   0.015819   0.858414   88.91968   94.71333
+ station08   0.122581   0.081102   0.007302   0.838919   87.74193   93.60595
+
+
+                                     10
+ station09   0.089445   0.060774   0.01242   0.779887   91.05552   99.16067
+
+
+
+
+             (a) 2月最后一周                           (b) 5月最后一周
+
+
+
+
+             (c) 8月最后一周                           (d) 11月最后一周
+
+
+             图 6   光伏电站 station00 的 RF 模型预测结果可视化
+   通过绘制实际发电功率与预测发电功率对比图可以看出，利用 RF 进行预测
+的发电功率依然满足长周期特性和短周期特性，太阳辐照强度和功率的高低随着
+季节和一天内时间的变化而波动。夏季发电功率强；冬季发电功率弱；白天发电
+功率强，晚上发电功率弱。
+   通过计算实际功率与预测功率的评估指标可知，十个光伏发电站的预测结果
+RMSE 在 0.18 以内，平均 acc 值超过 85%，平均 p 值超过 90%，可以得出利用
+RF 模型较气象学模型能够有效提取历史功率数据的时序特征及季节性规律。
+   然而，由于该方案仅使用历史发电功率，该模型仍有改进空间。
+
+
+8 融入 NWP 信息的光伏电站日前发电功率预测模型
+8.1 相关理论基础
+
+①模糊 C 均值（FCM）算法
+
+
+                                     11
+   FCM 聚类算法通过将数据点与各聚类中心的相似度总和作为优化目标，通
+过优化过程最小化该目标函数以确定聚类中心[7]。其目标函数实际上代表了所有
+数据点到各聚类中心的欧氏距离之和（即误差平方和）。聚类的过程就是最小化
+目标函数的过程，通过反复的选代运算，逐步降低目标函数的误差值，当目标函
+数收敛时，可得到最终的聚类结果。具体来说，其目标函数如下：
+                                         c        c   n
+               J (U , C1 , …, Cc ) =   ∑ Ji =
+                                       =i 1
+                                                ∑∑ u d ,
+                                                =i 1 =j 1
+                                                            m
+                                                            ij
+                                                                  2
+                                                                 ij   (12)
+
+其中，C 为聚类中心，隶属度矩阵 U 表示数据点属于某个聚类的程度，FCM 把
+n 个向量 xi ( i = 1, 2...n ) 分为 c 个模糊组，并求每组的聚类中心，使得非相似性指
+标的价值函数达到最小。
+②经验模态分解（EMD）
+   EMD 分解是对非平稳信号进行平稳化处理的一种手段[8]。其结果是将信号
+中不同尺度的波动和趋势进行逐级分解，产生一系列具有不同特征尺度的数据序
+列，每一个序列称为一个本征模态函数（Intrinsic Mode Function, IMF）
+                                              。对于一
+个 IMF，其必须满足以下两个条件：在整个时间范围内，局部极值点和零交叉点
+的数量必须相等或差值最多为 1；由局部极大值和局部极小值形成的两个包络曲
+线的平均值在任意点上应为 0。
+③t-SNE 降维
+   t-SNE 降维是一个常用的高维数据降维方法，它通过概率分布将高维空间中
+相似的数据点映射到低维空间中的相近位置，同时保持数据点间的概率关系[9]。
+由于 t-SNE 主要利用 t-分布来增强低维空间中数据点的分离度，因此其特别适合
+于捕捉数据的局部结构，且能揭示复杂的、非线性的数据分布，从而避免了在低
+维空间中常见的拥挤问题。
+
+8.2 FCM-EMD-tSNE-RF 预测模型
+
+   为了较好地使用 NWP 信息融合预测光伏电站发电功率，并基于 NWP 信息
+进行场景划分，本文构建了 FCM-EMD-tSNE-RF 预测模型，其架构如图 7 所示。
+   具体来说，该框架分为以下几个关键步骤：
+①使用 FCM 划分气象场景
+   由于光伏电站的发电功率对气象条件敏感，尤其对辐照度、温度、湿度等气
+象数据敏感，因此，本文考虑对气象场景进行划分，对每一个场景分别使用 RF
+模型进行预测。具体来说，本文使用 FCM 聚类算法对辐照度、温度、湿度进行
+聚类，将其划分为 4 个簇，分别对应 4 类气象场景。
+   在本文中，使用 FCM 聚类而非常见的 K-means 聚类，主要有以下原因：
+1) 因为天气现象通常具有渐变和重叠的特性，其边界较为模糊。而 FCM 是一
+
+
+                                       12
+  种软聚类算法，允许数据点以不同的隶属度属于多个聚类，这与天气数据的
+  特性相符；
+2) 天气数据往往包含不确定性和模糊性，例如辐照度、温度、湿度等气象变
+  量可能在不同的天气模式中表现出相似的特征。由于不强制要求每一个数
+  据点都严格属于一个聚类，因此，其能够更好地处理这种不确定性。
+                                        辐照度 温度   湿度
+
+
+                                          FCM聚类
+                                   簇1     簇2     簇3   簇4
+                IMF1
+           EMD IMFn
+                 ···
+
+
+
+     辐照度
+           分解 残差                   RF
+                            注入特征
+                IMF1
+           EMD IMFn t-SNE                RF
+                 ···
+
+
+
+
+      温度
+           分解 残差 降维
+                                                 RF
+                IMF1
+           EMD IMFn                                   RF
+                 ···
+
+
+
+
+      湿度
+           分解 残差
+
+                                        合并得到预测结果
+
+                       图 7         模型架构
+②使用 EMD 分解气象数据
+  由于气象数据多为非线性且非平稳的，故其统计特性随时间变化明显，然而，
+气象数据的特征缺由于其变化较大而难以直接提取。EMD 可以自适应地将复杂
+的气象数据分解为若干个 IMFs，其代表了原始数据的不同内在振荡模式，这有
+助于提取其重要特征，为 RF 模型提供更有意义的输入。
+  此外，在分解过程中，EMD 可以将噪声和非相关成分从原始数据中提取出
+来，这有助于 RF 模型更准确地捕捉到数据的潜在规律。
+③使用 t-SNE 对 EMD 的分解结果进行降维
+  EMD 分解虽然能够提取原始数据中的显著特征，但是其可能会产生多个
+IMFs，每个 IMF 都包含原始数据的一部分信息。直接将所有 IMFs 作为特征输入
+模型可能导致特征空间过大，增加模型训练和预测的计算复杂度。因此，需要对
+EMD 的分解结果进行降维。
+  由于气象数据通常包含复杂的非线性关系，而 t-SNE 作为一种非线性降维技
+术，能够很好地捕获气象数据的局部结构，因此，本文使用 t-SNE 对 EMD 的分
+解结果进行降维。
+④分别使用 RF 对不同气象场景的数据进行预测
+  使用 FCM 划分气象场景后，可以对每一个气象场景分别训练独立的 RF 模
+
+
+                                   13
+型，以更好地学习该场景里的气象特征。具体来说，每一个 RF 模型融合7.3 节
+所构建的特征与 t-SNE 降维后得到的气象特征进行预测，并将预测结果合并，得
+到最终的预测结果。
+
+8.3 使用 FCM-EMD-tSNE-RF 模型进行预测
+
+①FCM 聚类
+  FCM 模型输入辐照度、温度、湿度数据，并将其划分为 4 个簇，分别对应 4
+个气象场景，聚类结果的可视化效果如图 8 所示。
+
+
+
+
+                图 8   FCM 聚类结果可视化
+②EMD 分解
+  使用 EMD 分别对辐照度、温度、湿度进行分解，得到对应的 IMFs 及残差。
+以光伏电站 station00 的辐照度数据为例，EMD 分解后得到 12 个 IMF 和一个残
+差，其 EMD 分解及其可视化效果如图 9 所示。
+
+
+
+
+                         14
+  图 9   对光伏电站 station00 的辐照度数据进行 EMD 分解的可视化效果
+③t-SNE 降维
+   使用 t-SNE 对 EMD 分解的 IMFs 及其残差进行降维，并确保降维得到的特
+征与光伏电站发电功率的关联，其降维结果可视化效果如图 10 所示。
+
+
+
+
+               图 10   t-SNE 降维结果可视化
+④使用 RF 进行预测
+
+
+                         15
+   按照 FCM 聚类得到的场景划分，融合7.3 节所构建的特征与 t-SNE 降维后
+得到的气象特征进行预测。为了评估本模型的效果，在训练时，本文统计了所使
+用特征的重要性，以光伏电站 station00 的第一个气象场景 RF 模型为例，如图 11
+所示。
+
+
+
+
+                          图 11     特性重要性排序
+   可以发现，本文所构建的特征 tSNE1、tSNE2、tSNE3 的重要性在所有特征
+的重要性排序中排前列，可以认为该特征能够有效地参与到 RF 模型的训练中，
+并产生适当影响。
+
+8.4 预测结果与分析
+
+   本节使用与7.4 节相同的 RF 模型超参数设置（如表 7），同样使用第 2、5、
+8、11 个月最后一周的数据作为测试集，对模型进行验证和评估，评估结果如表
+9 所示，模型在光伏电站 station00 上的预测结果如图 12 所示。
+                表 9     FCM-EMD-tSNE-RF 模型的评估结果
+ 光伏电站         RMSE        MAE         ME          r      acc (%)      q (%)
+ station00   0.042569    0.0242     -0.0005   0.975687   95.74313    99.9256
+ station01    0.06712   0.036564   -0.00265   0.969325   93.28796   98.66568
+ station02    0.05187   0.029549    -0.0003   0.975544   94.81304   99.62936
+ station03   0.049559   0.027769   -0.00139   0.978068   95.04414   99.43978
+ station04   0.093706   0.050251   0.002707   0.963727   90.62938   96.72619
+ station05   0.068585   0.034322   0.000902    0.97134   93.14152   98.76847
+ station06   0.048243   0.026265   0.000177   0.961114   95.17568   99.70238
+ station07   0.054103   0.032099   0.002439    0.96748   94.58969    99.6277
+ station08   0.060713   0.034317   -0.00047   0.962195   93.92872   99.03346
+ station09   0.029868   0.015272   0.003011   0.977862    97.0132    99.8801
+
+
+                                     16
+           (a) 2月最后一周               (b) 5月最后一周
+
+
+
+
+           (c) 8月最后一周               (d) 11月最后一周
+
+
+  图 12   光伏电站 station00 的 FCM-EMD-tSNE-RF 模型预测结果可视化
+  结合表 9 与图 12 可以发现，FCM-EMD-tSNE-RF 模型的预测效果要优与
+RF 模型。通过计算实际功率与预测功率的评估指标可知，十个光伏发电站的预
+测结果 RMSE 在 0.10 以内，平均 acc 值超过 90%，平均 p 值超过 98%，可以得
+出利用 FCM-EMD-tSNE-RF 模型能够有效提取历史功率数据的时序特征及季节
+性规律。
+
+
+9 使用 NWP 降尺度提高模型预测精度
+9.1 ERA5 数据集与数据预处理
+
+  由于上文所使用的 PVOD 仅含有光伏电站该点的 NWP 信息，而不含有邻近
+区域的 NWP 信息，因此，本文结合使用 ERA5 数据集完成 NWP 降尺度，该数
+据集的数据规格如表 10 所示。
+                 表 10   ERA5 数据集的数据规格
+数据规格                       参数值
+
+
+
+                           17
+ 数据来源                                                    https://cds.climate.copernicus.eu/datasets
+ NWP 数据时间分辨率                                             60min
+ NWP 数据经纬度分辨率                                            0.25°
+ NWP 属性                                                  水平辐照度（GHI）、法向辐照度（DNI）、
+ 数据起始-截止时间（UTC+08:00） 2018.01.01-2019.12.31
+ 经纬度范围                                                   North:40°, West:113°, South:36° East:118°
+      不难发现，ERA5 数据集的时间分辨率为 60min，而本文所使用的 PVOD 数
+据集时间分辨率为 15min，因此，需要对 ERA5 数据集进行插值，以满足本文所
+需的时间分辨率。
+      具体来说，本文首先使用多项式拟合法，对某一个具体坐标上的 NWP 数据
+进行拟合，然后结合拟合结果进行插值。即对于一个具体的 NWP 数据，本文使
+用最小二乘法确定其拟合多项式的系数，进而得到该 NWP 数据的近似多项式表
+达。基于此，就可以得到 15min 时间分辨率的 ERA5 数据集。
+
+9.2 NWP 降尺度
+
+      由于 ERA5 数据集的经纬度分辨率为 0.25°，其分辨率较低，因此，本文对
+ERA5 数据集的 NWP 数据进行降尺度，以获得各光伏电站的具体 NWP 数据。
+      ERA5 数据集按照经纬度形成了一个二维规则网络，天然地，其可以使用二
+维线性插值法完成降尺度。具体来说，假定某光伏电站在该二维网络中的坐标为
+( x0 , y0 ) 且其辐照度值为 z0 ，并令该光伏电站所在经纬度网格的四点坐标分别为
+( xi , y j ) 、( xi +1 , y j ) 、( xi , y j +1 ) 和 ( xi +1 , y j +1 ) 且其辐照度值为 zi , j 、zi +1, j 、zi , j +1 和 zi +1, j +1 ，
+则有二维线性插值公式：
+                z0= zi , j (1 − α )(1 − β ) + zi +1, jα (1 − β ) + zi , j +1 (1 − α ) β + zi +1, j +1αβ ,        (13)
+                x0 − xi                              y − yi
+其中，α =                    是 x0 在 x0 和 x0 之间的相对位置，β = 0         是 y0 在 y0 和 y0 之
+               xi +1 − xi                           yi +1 − yi
+间的相对位置。
+      以 2018 年 8 月 16 日与 2018 年 11 月 16 日正午 12:00 的 NWP 数据为例，降
+尺度后，绘制其辐照度热力图，分别如图 13 和图 14 所示。
+
+
+
+
+                                                          18
+               图 13     2018 年 8 月 16 日正午的辐照度热力图
+
+
+
+
+              图 14      2018 年 11 月 16 日正午的辐照度热力图
+
+9.3 使用 NWP 降尺度后的数据进行预测
+
+   使用 NWP 降尺度后的辐照度数据替换未降尺度的辐照度数据，其余参数即
+特征不变，使用 FCM-EMD-tSNE-RF 模型进行预测，同样使用第 2、5、8、11 个
+月最后一周的数据作为测试集，对模型进行验证和评估，评估指标如表 11 所示，
+模型在光伏电站 station00 上的预测结果如图 15 所示。
+   表 11 替换 NWP 降尺度数据后 FCM-EMD-tSNE-RF 模型的评估结果
+ 光伏电站         RMSE        MAE       ME         r      acc (%)     q (%)
+ station00   0.041313   0.023331 -6.21E-05 0.977109    95.8687   99.85119
+ station01   0.065618   0.036212 -0.00337 0.970739    93.43823   98.96219
+ station02   0.051191   0.028095 -0.00012 0.976183    94.88093   99.55523
+ station03    0.04655   0.026054 -0.00101 0.980642    95.34503   99.57983
+ station04   0.090816   0.048585 0.002305 0.965957    90.91839   97.02381
+ station05   0.064916   0.030872 -0.00034 0.974363    93.50835   98.52217
+ station06   0.047297   0.024901 0.001063 0.962665    95.27028   99.55357
+ station07   0.052353   0.031136 0.001992 0.969569    94.76468   99.70216
+
+
+                                    19
+ station08   0.061414   0.033679   -0.00055   0.961357   93.85863   99.10781
+ station09   0.027682   0.014056   0.002439   0.981187   97.23179     100
+
+
+
+
+              (a) 2月最后一周                             (b) 5月最后一周
+
+
+
+
+              (c) 8月最后一周                            (d) 11月最后一周
+
+图 15   光伏电站 station00 替换 NWP 降尺度数据后 FCM-EMD-tSNE-RF 模型
+                              预测结果可视化
+   结合表 11 与图 15 可以发现，替换 NWP 降尺度数据后的预测效果要优与
+替换前，但提升较少，猜测可能是 NWP 降尺度的精度原因。
+
+
+10 模型的评价与推广
+10.1模型评价
+
+   表 12 与图 16 展示了本文所作各模型的预测效果对比，不难发现，NWP 降
+尺度后 FCM-EMD-TSNE-RF 模型的预测效果最佳，FCM-EMD-TSNE-RF 模型的
+预测效果次之，RF 模型的预测效果尚可，气象学模型的预测效果欠佳。
+   另外可以发现，NWP 降尺度后 FCM-EMD-TSNE-RF 模型的较 FCM-EMD-
+TSNE-RF 模型的提升较少，但 FCM-EMD-TSNE-RF 模型较 RF 模型的提升较为
+明显，且这三个模型的预测效果都明显由于气象学模型。
+
+
+                                     20
+                        表 12   各模型 acc 值对比
+                                                     NWP 降尺度
+                                         FCM-EMD-     后 FCM-
+光伏电站        气象学模型              RF
+                                          TSNE-RF    EMD-TSNE-
+                                                         RF
+station00    73.23407      89.66440932    95.74313     95.8687
+station01    77.50926      85.80309288    93.28796    93.43823
+station02    75.63931      87.87198191    94.81304    94.88093
+station03    75.84561      89.87163086    95.04414    95.34503
+station04    74.64010      81.79153523    90.62938    90.91839
+station05    77.20204      89.23310935    93.14152    93.50835
+station06    69.22265      88.93813353    95.17568    95.27028
+station07    69.79706      88.91967816    94.58969    94.76468
+station08    71.84163      87.74193056    93.92872    93.85863
+station09    63.39766      91.05552089    97.01320    97.23179
+
+
+
+
+            (a) 2月最后一周                        (b) 5月最后一周
+
+
+
+
+            (c) 8月最后一周                        (d) 11月最后一周
+
+            图 16   光伏电站 station00 的各模型预测结果对比
+  进一步分析后，本文可以做以下结论：
+1) 在历史功率的随机森林预测模型基础上融入 NWP 信息，结合了温度、湿度、
+
+
+                                    21
+    辐照度等多个气象特征和时间特征，通过 FCM 聚类、EMD 分解和 t-SNE 降
+    维等方法对天气数据进行预处理，可以有效提高模型的预测效率。
+2) 通过对 NWP 数据进行降维，获得更高精度的 NWP 数据，可以在一定程度
+    上改善模型的预测效果；
+3) 对光伏发电的预测应当结合天气数据或 NWP 数据，如仅采用较为简单的气
+    象学模型，可能无法获得较好的预测效果。
+
+10.2模型的推广
+
+    本文提出的基于 NWP 降尺度后 FCM-EMD-tSNE-RF 的光伏电站发电功率
+预测模型，在当前数据集和场景下表现出较高的预测精度，同时也具备一些适用
+性和推广潜力。以下从多个维度探讨模型的推广方向和应用前景：
+1) 模型可通过调整地理位置参数（如经纬度、光伏板倾角）和本地气象数据，
+    推广至其他气候区域（如高纬度地区、沙漠地带或沿海地区），在跨区域上具
+    有一定适用性。例如针对多云多雨地区，可进一步优化 FCM 聚类中的气象
+    场景划分策略，以适应更复杂的气象变化。
+2) 模型对 MW 级光伏电站的预测效果已得到验证，通过调整装机容量参数和
+    特征工程中的滑动窗口尺度，可扩展至分布式屋顶光伏系统或 GW 级大型光
+    伏电站，通过结合高分辨率数据或者多模态数据融合，可进一步增强模型精
+    确度，在多情景适配下具有一定推广潜力。例如结合卫星遥感数据、云图、
+    IoT 设备状态等信息，还可以引入光伏板表面灰尘积累、阴影遮盖等实际运
+    行数据，可更精准地修正理论模型。
+
+
+参考文献
+[1] Yao, T., Wang, J., Wu, H., Zhang, P., Li, S., Wang, Y., ... & Shi, M. (202
+    1). A photovoltaic power output dataset: Multi-source photovoltaic power o
+    utput dataset with Python toolkit. Solar Energy, 230, 122-130.
+[2] Chen, Y., & Xu, J. (2022). Solar and wind power data from the Chinese s
+    tate grid renewable energy generation forecasting competition. Scientific dat
+    a, 9(1), 577.
+[3] Reda, I., & Andreas, A. (2004). Solar position algorithm for solar radiation
+     applications. Solar energy, 76(5), 577-589.
+[4] Ineichen, P., & Perez, R. (2002). A new airmass independent formulation f
+    or the Linke turbidity coefficient. Solar energy, 73(3), 151-157.
+[5] Kamphuis, N. R., Gueymard, C. A., Holtzapple, M. T., Duggleby, A. T., &
+     Annamalai, K. (2020). Perspectives on the origin, derivation, meaning, and
+     significance of the isotropic sky model. Solar Energy, 201, 8-12.
+[6] Breiman, L. (2001). Random forests. Machine learning, 45, 5-32.
+
+                                       22
+[7] Bezdek, J. C. (2013). Pattern recognition with fuzzy objective function algor
+    ithms. Springer Science & Business Media.
+[8] Huang, N. E., Shen, Z., Long, S. R., Wu, M. C., Shih, H. H., Zheng, Q.,
+      ... & Liu, H. H. (1998). The empirical mode decomposition and the Hilb
+    ert spectrum for nonlinear and non-stationary time series analysis. Proceedin
+    gs of the Royal Society of London. Series A: mathematical, physical and e
+    ngineering sciences, 454(1971), 903-995.
+[9] Van der Maaten, L., & Hinton, G. (2008). Visualizing data using t-SNE. Jo
+    urnal of machine learning research, 9(11).
+
+
+
+
+                                       23
+附 录
+① RF 关键代码：
+def train(train_data, model_path):
+     train_data_copy = train_data.copy()
+
+     # 分离特征和目标变量
+     X_train = train_data_copy.drop(columns=['date_time', 'power'])
+     y_train = train_data_copy['power']
+
+     # 初始化随机森林模型
+     model = RandomForestRegressor(n_estimators=100, random_state=42)
+
+     # 训练模型
+     model.fit(X_train, y_train)
+
+    # 使用 5 折交叉验证评估模型
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    cv_scores = cross_val_score(model, X_train, y_train, cv=kf, scoring='neg_m
+ean_squared_error')
+
+     # 保存模型
+     joblib.dump(model, model_path)
+
+
+def predict(model_path, test_data):
+     # 加载模型
+     model = joblib.load(model_path)
+
+
+     # 分离特征和目标变量
+     X_test = test_data.drop(columns=['date_time', 'power'], errors='ignore')
+     y_test = test_data.get('power', None)
+
+
+     if X_test.empty:
+         return pd.DataFrame(columns=test_data.columns.tolist() + ['predicted_po
+wer'])
+
+
+     # 进行预测
+
+
+
+                                           24
+     y_pred = model.predict(X_test)
+     # 将预测结果添加到原始数据框中
+     test_data['predicted_power'] = y_pred
+
+
+     return test_data
+
+
+def extract_features(station_data):
+     """
+     从光伏发电功率的时序数据中提取特征
+
+
+     参数:
+           station_data (DataFrame): 包含 date_time 和 power 列的数据集
+
+
+     返回:
+           DataFrame: 包含提取特征的数据集
+     """
+     # 确保 date_time 列是 datetime 类型
+     station_data['date_time'] = pd.to_datetime(station_data['date_time'])
+
+
+     # 添加时间特征
+     station_data['month'] = station_data['date_time'].dt.month
+     station_data['day'] = station_data['date_time'].dt.day
+     station_data['hour'] = station_data['date_time'].dt.hour
+     station_data['minute'] = station_data['date_time'].dt.minute
+
+
+     # 计算滑动窗口特征
+     window_size = 4
+     step_size = 2      # 步幅为 2
+     shifted_power = station_data['power'].shift(window_size - 1)
+     for i in range(1, 5):
+           station_data[f'rolling_max_{i}'] = shifted_power.rolling(window=window
+_size).max().shift(
+               (i - 1) * step_size)
+           station_data[f'rolling_min_{i}'] = shifted_power.rolling(window=window
+
+
+                                          25
+_size).min().shift(
+               (i - 1) * step_size)
+          station_data[f'rolling_mean_{i}'] = shifted_power.rolling(window=windo
+w_size).mean().shift(
+               (i - 1) * step_size)
+          station_data[f'rolling_change_rate_{i}'] = (shifted_power.rolling(window=
+window_size).max().shift(
+               (i - 1) * step_size) - shifted_power.rolling(window=window_size).
+min().shift(
+               (i - 1) * step_size)) / (window_size - 1)
+
+
+     station_data.fillna(0, inplace=True)
+     return station_data
+
+
+② FCM 关键代码：
+def fcm_clustering(station_data, columns, n_clusters, m=2):
+     # 提取特定的列
+     features = station_data[columns].values.T
+
+
+     # 执行 FCM 聚类
+     cntr, u, u0, d, jm, p, fpc = cmeans(
+          features,
+          n_clusters,
+          m,
+          error=0.005,
+          maxiter=1000,
+          init=None
+     )
+
+
+     # 获取聚类结果
+     cluster_membership = np.argmax(u, axis=0).tolist()
+     return cluster_membership
+
+
+③ EMD 关键代码：
+
+
+                                            26
+def perform_emd_decomposition(station_data, columns):
+    emd = EMD()
+    emd_result = pd.DataFrame()
+
+
+    # 遍历需要进行 EMD 分解的列
+    for column in columns:
+         data = station_data[column].values
+
+
+         # 执行 EMD 分解
+         imfs = emd.emd(data)
+
+
+         # 保存结果
+         for i, imf in enumerate(imfs):
+              emd_result[f'{column}_IMF{i + 1}'] = imf
+
+
+    return emd_result
+
+
+④ t-SNE 关键代码：
+def perform_tsne_decomposition(emd_result, n_components=3, perplexity=30.0, le
+arning_rate=200.0):
+
+
+    tsne = TSNE(n_components=n_components, perplexity=perplexity, learning_r
+ate=learning_rate, random_state=42)
+
+
+    # 对 EMD 分解结果进行 t-SNE 分解
+    tsne_data = tsne.fit_transform(emd_result)
+
+
+    # 创建一个 DataFrame 来保存 t-SNE 分解结果
+    tsne_result = pd.DataFrame(tsne_data, columns=[f'tSNE{i + 1}' for i in ran
+ge(n_components)])
+
+
+    return tsne_result
+
+
+⑤ Problem 1 关键代码：
+
+                                          27
+def calculate_solar_parameters(latitude, longitude, beijing_time_str, surface_tilt, s
+urface_azimuth=180, linke_turbidity=5):
+      # 处理时区
+      timezone = 'Asia/Shanghai'
+      time = pd.DatetimeIndex([pd.Timestamp(beijing_time_str)]).tz_localize(timezo
+ne)
+
+
+      # 创建 Location 对象
+      site = Location(latitude, longitude, tz=timezone)
+
+
+      # 计算太阳位置
+      solar_position = get_solarposition(time, latitude, longitude)
+      solar_zenith = solar_position['apparent_zenith'].values[0] # 天顶角
+      solar_azimuth = solar_position['azimuth'].values[0]
+      altitude = solar_position['elevation'].values[0] # 高度角
+
+
+      # 计算晴天辐照度
+      clearsky = site.get_clearsky(time, linke_turbidity=linke_turbidity)
+      ghi = clearsky['ghi'].values[0]
+      dni = clearsky['dni'].values[0]
+      dhi = clearsky['dhi'].values[0]
+
+
+      # 计算斜面辐照度
+      poa_irradiance = get_total_irradiance(
+          surface_tilt=surface_tilt,
+          surface_azimuth=surface_azimuth,
+          solar_zenith=solar_zenith,
+          solar_azimuth=solar_azimuth,
+          dni=dni,
+          ghi=ghi,
+          dhi=dhi
+      )
+
+
+      poa_global = poa_irradiance['poa_global']
+
+
+                                          28
+    poa_direct = poa_irradiance['poa_direct']
+    poa_diffuse = poa_irradiance['poa_diffuse']
+
+
+    return {
+         'Alt': round(altitude, 5),             # 太阳高度角(度)
+         'Azim': round(solar_azimuth, 5),         # 太阳方位角(度)
+         'GHI': round(ghi, 5),                      # 水平面总辐照度(GHI)
+         'DNI': round(dni, 5),                      # 直接法向辐照度(DNI)
+         'DHI': round(dhi, 5),                      # 漫射水平辐照度(DHI)
+         'POA Glob': round(poa_global, 5),         # 斜面总辐照度(POA Global)
+         'POA Dir': round(poa_direct, 5),         # 斜面直接辐照度(POA Direct)
+         'POA Diff': round(poa_diffuse, 5)        # 斜面漫射辐照度(POA Diffuse)
+    }
+
+
+
+
+if __name__ == "__main__":
+    problem = 'problem_01'
+    metadata = pd.read_csv('dataset/metadata.csv')
+
+
+    all_evaluations = []
+    for _, row in metadata.iterrows():
+         station_id = row['Station_ID']
+         latitude = row['Latitude']
+         longitude = row['Longitude']
+         capacity = row['Capacity']
+         panel_size = row['Panel_Size']
+         panel_number = row['Panel_Number']
+         tilt = float(re.findall(r'\d+', row['Array_Tilt'])[0])
+
+
+         station_data = pd.read_csv('dataset/{}_processed.csv'.format(station_id))
+
+
+         results = []
+         for _, time_row in tqdm(station_data.iterrows(), total=len(station_data),
+desc=f"Processing {station_id}"):
+
+
+                                           29
+               time_str = time_row['date_time']
+               result = calculate_solar_parameters(latitude, longitude, time_str, tilt)
+               poa_global = result['POA Glob']
+               ghi = result['GHI']
+               predict_power = poa_global * capacity / 1e6
+               results.append({
+                    'date_time': time_str,
+                    'GHI': ghi,
+                    'POA_Glob': poa_global,
+                    'predict_power': predict_power,
+                    'power': time_row['power']
+               })
+
+
+          results_df = pd.DataFrame(results)
+          results_df.to_csv(f'results/{problem}/result_{station_id}.csv', index=False)
+
+
+⑥ Problem 2 关键代码：
+if __name__ == "__main__":
+     problem = 'problem_02'
+     metadata = pd.read_csv('dataset/metadata.csv')
+
+
+     all_evaluations_2 = []
+     all_evaluations_5 = []
+     all_evaluations_8 = []
+     all_evaluations_11 = []
+     all_evaluations_total = []
+
+
+     for _, row in metadata.iterrows():
+          station_id = row['Station_ID']
+          capacity = row['Capacity']
+          station_data = pd.read_csv('dataset/{}_processed.csv'.format(station_id))
+[['date_time', 'power']]
+
+
+          # 归一化
+
+
+                                             30
+          normalized_station_data, min_value, max_value = normalize_column(sta
+tion_data, 'power')
+
+
+          # 特征处理
+          station_data_with_features = extract_features(normalized_station_data)
+
+
+          # 数据集分割
+          train_data, test_data_2, test_data_5, test_data_8, test_data_11, test_data_
+total = split_train_test(station_data_with_features)
+
+
+          # 训练
+          model_path = f'model/{problem}/{station_id}.pkl'
+          train(train_data, model_path)
+
+
+          # 预测并反归一化
+          test_data_2 = predict(model_path, test_data_2)
+          test_data_2 = inverse_normalize_column(test_data_2, 'power', min_value,
+ max_value)
+          test_data_2 = inverse_normalize_column(test_data_2, 'predicted_power',
+min_value, max_value)
+
+
+          test_data_5 = predict(model_path, test_data_5)
+          test_data_5 = inverse_normalize_column(test_data_5, 'power', min_value,
+ max_value)
+          test_data_5 = inverse_normalize_column(test_data_5, 'predicted_power',
+min_value, max_value)
+
+
+          test_data_8 = predict(model_path, test_data_8)
+          test_data_8 = inverse_normalize_column(test_data_8, 'power', min_value,
+ max_value)
+          test_data_8 = inverse_normalize_column(test_data_8, 'predicted_power',
+min_value, max_value)
+
+
+          test_data_11 = predict(model_path, test_data_11)
+
+
+                                          31
+         test_data_11 = inverse_normalize_column(test_data_11, 'power', min_val
+ue, max_value)
+         test_data_11 = inverse_normalize_column(test_data_11, 'predicted_power
+', min_value, max_value)
+
+
+         test_data_total['predicted_power'] = pd.concat([
+              test_data_2['predicted_power'],
+              test_data_5['predicted_power'],
+              test_data_8['predicted_power'],
+              test_data_11['predicted_power']
+         ])
+         test_data_total = inverse_normalize_column(test_data_total, 'power', min
+_value, max_value)
+         test_data_total[['date_time', 'predicted_power', 'power']].to_csv(f'results/{p
+roblem}/result_{station_id}.csv', index=False)
+
+
+⑦ Problem 3 关键代码：
+if __name__ == "__main__":
+    problem = 'problem_03_3'
+    metadata = pd.read_csv('dataset/metadata.csv')
+
+
+    all_evaluations_2 = []
+    all_evaluations_5 = []
+    all_evaluations_8 = []
+    all_evaluations_11 = []
+    all_evaluations_total = []
+
+
+    for _, row in metadata.iterrows():
+         station_id = row['Station_ID']
+         capacity = row['Capacity']
+         station_data = pd.read_csv('dataset/{}_processed.csv'.format(station_id))[[
+              'date_time', 'power', 'nwp_globalirrad', 'nwp_directirrad', 'nwp_temp
+erature', 'nwp_humidity']]
+
+
+
+                                          32
+          # 对天气数据进行 FCM 聚类
+          n_clusters = 3
+          cluster_results = fcm_clustering(station_data, ['nwp_globalirrad', 'nwp_te
+mperature', 'nwp_humidity'], n_clusters)
+          station_data['cluster'] = cluster_results
+          station_data.to_csv(f'results/{problem}/cluster_results_{station_id}.csv', in
+dex=False)
+
+
+          # 归一化
+          normalized_station_data, min_value, max_value = normalize_column(sta
+tion_data, 'power')
+          normalized_station_data, _, _ = normalize_column(normalized_station_d
+ata, 'nwp_globalirrad')
+          normalized_station_data, _, _ = normalize_column(normalized_station_d
+ata, 'nwp_directirrad')
+          normalized_station_data, _, _ = normalize_column(normalized_station_d
+ata, 'nwp_temperature')
+          normalized_station_data, _, _ = normalize_column(normalized_station_d
+ata, 'nwp_humidity')
+
+
+          # EMD 分解
+          emd_result = perform_emd_decomposition(normalized_station_data, ['nw
+p_globalirrad', 'nwp_directirrad', 'nwp_temperature', 'nwp_humidity'])
+
+
+          # t-SNE 降维
+          tsne_result = perform_tsne_decomposition(emd_result)
+
+
+          # 合并
+          columns_to_drop = ['nwp_globalirrad', 'nwp_directirrad', 'nwp_temperatu
+re', 'nwp_humidity']
+          normalized_station_data.drop(columns=columns_to_drop, inplace=True)
+          concat_normalized_station_data = pd.concat([normalized_station_data, ts
+ne_result], axis=1)
+
+
+
+
+                                           33
+         # 特征处理
+         station_data_with_features = extract_features(concat_normalized_station_
+data)
+
+
+         # 遍历聚类结果
+         test_data_2 = pd.DataFrame(columns=station_data_with_features.column
+s)
+         test_data_5 = pd.DataFrame(columns=station_data_with_features.column
+s)
+         test_data_8 = pd.DataFrame(columns=station_data_with_features.column
+s)
+         test_data_11 = pd.DataFrame(columns=station_data_with_features.column
+s)
+         test_data_total = pd.DataFrame(columns=station_data_with_features.colu
+mns)
+         for cluster_id in range(n_clusters):
+              cluster_station_data_with_features = station_data_with_features[stati
+on_data['cluster'] == cluster_id]
+              cluster_station_data_with_features.drop(columns=['cluster'], inplace=
+True)
+
+
+              # 数据集分割
+              train_data_cluster, test_data_2_cluster, test_data_5_cluster, test_data
+_8_cluster, test_data_11_cluster, test_data_total_cluster = (
+                   split_train_test(cluster_station_data_with_features))
+
+
+              # 训练
+              model_path = f'model/{problem}/{station_id}_cluster={cluster_id}.p
+kl'
+              train(train_data_cluster, model_path)
+
+
+              # 预测并反归一化
+              test_data_2_cluster = predict(model_path, test_data_2_cluster)
+              test_data_2_cluster = inverse_normalize_column(test_data_2_cluster,
+
+
+                                         34
+ 'power', min_value, max_value)
+             test_data_2_cluster = inverse_normalize_column(test_data_2_cluster,
+ 'predicted_power', min_value, max_value)
+             test_data_2 = pd.concat([test_data_2, test_data_2_cluster], axis=0)
+
+
+             test_data_5_cluster = predict(model_path, test_data_5_cluster)
+             test_data_5_cluster = inverse_normalize_column(test_data_5_cluster,
+ 'power', min_value, max_value)
+             test_data_5_cluster = inverse_normalize_column(test_data_5_cluster,
+ 'predicted_power', min_value, max_value)
+             test_data_5 = pd.concat([test_data_5, test_data_5_cluster], axis=0)
+
+
+             test_data_8_cluster = predict(model_path, test_data_8_cluster)
+             test_data_8_cluster = inverse_normalize_column(test_data_8_cluster,
+ 'power', min_value, max_value)
+             test_data_8_cluster = inverse_normalize_column(test_data_8_cluster,
+ 'predicted_power', min_value, max_value)
+             test_data_8 = pd.concat([test_data_8, test_data_8_cluster], axis=0)
+
+
+             test_data_11_cluster = predict(model_path, test_data_11_cluster)
+             test_data_11_cluster = inverse_normalize_column(test_data_11_clust
+er, 'power', min_value, max_value)
+             test_data_11_cluster = inverse_normalize_column(test_data_11_clust
+er, 'predicted_power', min_value, max_value)
+             test_data_11 = pd.concat([test_data_11, test_data_11_cluster], axis=
+0)
+
+
+             test_data_total_cluster['predicted_power'] = pd.concat([
+                  test_data_2_cluster['predicted_power'],
+                  test_data_5_cluster['predicted_power'],
+                  test_data_8_cluster['predicted_power'],
+                  test_data_11_cluster['predicted_power']
+             ])
+             test_data_total = pd.concat([test_data_total, test_data_total_cluster],
+
+
+                                        35
+axis=0)
+          test_data_total = inverse_normalize_column(test_data_total, 'power', min
+_value, max_value)
+          test_data_total[['date_time', 'predicted_power', 'power']].to_csv(f'results/{p
+roblem}/result_{station_id}.csv', index=False)
+
+
+⑧ Problem 4 二维线性插值法关键代码：
+def extract_grid_points(df):
+     # 获取所有列名
+     columns = df.columns[1:] # 跳过 date_time 列
+
+
+     # 提取唯一的经纬度值
+     lats = set()
+     lons = set()
+     lat_lon_pairs = []
+
+
+     for col in columns:
+          # 解析列名格式：变量_纬度_经度
+          parts = col.split('_')
+          if len(parts) == 3:
+               lat = float(parts[1])
+               lon = float(parts[2])
+               lats.add(lat)
+               lons.add(lon)
+               lat_lon_pairs.append((lat, lon))
+
+
+     # 转换为排序后的列表
+     lats = sorted(list(lats))
+     lons = sorted(list(lons))
+
+
+     return lats, lons, lat_lon_pairs
+
+
+
+
+def create_interpolator(df, variable, lats, lons):
+
+
+                                           36
+     # 创建网格数据
+     grid_data = np.zeros((len(lats), len(lons)))
+
+
+     # 填充网格数据
+     for i, lat in enumerate(lats):
+          for j, lon in enumerate(lons):
+               col_name = f"{variable}_{lat:.2f}_{lon:.2f}"
+               if col_name in df.columns:
+                     grid_data[i, j] = df[col_name].iloc[0]     # 使用第一行数据创
+建插值器
+
+
+     # 创建插值器
+     interpolator = RegularGridInterpolator(
+          (lats, lons),
+          grid_data,
+          method='linear',
+          bounds_error=False,
+          fill_value=None
+     )
+
+
+     return interpolator
+
+
+
+
+def process_station_data(df, station_lat, station_lon, lats, lons):
+     # 创建结果 DataFrame
+     result_df = pd.DataFrame({'date_time': df['date_time']})
+
+
+     # 对每个时间点进行插值
+     for variable in ['cdir', 'ssrc']:
+          interpolated_values = []
+
+
+          for _, row in tqdm(df.iterrows(), total=len(df), desc=f"处理{variable}数
+据"):
+               # 创建当前时间点的插值器
+
+
+                                           37
+         interpolator = create_interpolator(
+              pd.DataFrame([row]), variable, lats, lons
+         )
+
+
+         # 进行插值
+         value = interpolator([station_lat, station_lon])[0]
+         interpolated_values.append(value)
+
+
+    # 将插值结果添加到结果 DataFrame
+    result_df[variable] = interpolated_values
+
+
+return result_df
+
+
+
+
+                                    38
+

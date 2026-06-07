@@ -1,0 +1,4 @@
+# 变体 E：全序列 VMD 泄漏（RQ3）——故意引入泄漏，演示"虚高精度"
+model:
+  use_vmd: true
+  leak_vmd: true
