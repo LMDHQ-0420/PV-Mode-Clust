@@ -1,0 +1,3 @@
+# 变体 I：辐照锚定头（RQ1 负结果对照）—— 物理先验 vs 纯学习残差
+model:
+  irrad_anchor: true

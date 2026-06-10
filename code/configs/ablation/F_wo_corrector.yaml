@@ -1,0 +1,5 @@
+# 变体 F：w/o 订正（RQ2）—— 直接用原始 NWP
+model:
+  use_corrector: false
+loss:
+  lambda_corr: 0.0

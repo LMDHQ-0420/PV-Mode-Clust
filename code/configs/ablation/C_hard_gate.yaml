@@ -1,3 +1,0 @@
-# 变体 C：硬门控（RQ2）——argmax one-hot
-model:
-  gate_mode: hard

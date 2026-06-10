@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# 批量消融 A–G：每个变体独立 ckpt/eval 目录，训练+评估后汇总到 summary.csv。
+# 批量消融 A–I（深度模型口径）：每个变体独立 ckpt/eval 目录，训练+评估后汇总到 summary.csv。
 # 用法：bash scripts/ablation.sh [station ...]   (缺省全 10 站，5 种子)
 # 注意：完整跑量大，建议先用单站验证：bash scripts/ablation.sh station00
+# 主表(deep/RF/stack)由 scripts/train_main.sh + summarize --mode main 产出，不在此。
 set -e
 cd "$(dirname "$0")/.."
 
@@ -18,14 +19,17 @@ SEEDS=(0 1 2 3 4)
 # 变体名:config:说明
 VARIANTS=(
   "A:configs/ablation/A_full.yaml:完整模型"
-  "B:configs/ablation/B_wo_corrector.yaml:w/o订正(RQ1)"
-  "C:configs/ablation/C_hard_gate.yaml:硬门控(RQ2)"
-  "D:configs/ablation/D_single_expert.yaml:单专家(RQ2)"
-  "E:configs/ablation/E_leak_vmd.yaml:全序列VMD泄漏(RQ3)"
-  "F:configs/ablation/F_wo_vmd.yaml:w/o VMD(RQ3)"
+  "B:configs/ablation/B_hard_gate.yaml:硬门控(RQ1)"
+  "C:configs/ablation/C_fixed_gate.yaml:固定门控(RQ1)"
+  "D:configs/ablation/D_homogeneous.yaml:同构专家(RQ1)"
+  "E:configs/ablation/E_single_expert.yaml:单专家(RQ1)"
+  "F:configs/ablation/F_wo_corrector.yaml:w/o订正(RQ2)"
+  "F2:configs/ablation/F2_blind_correct.yaml:盲目订正(RQ2)"
   "G2:configs/ablation/G_K2.yaml:K=2"
   "G4:configs/ablation/G_K4.yaml:K=4"
   "G5:configs/ablation/G_K5.yaml:K=5"
+  "I:configs/ablation/I_irrad_anchor.yaml:辐照锚定(RQ1负结果)"
+  "H:configs/ablation/H_leak_vmd.yaml:全序列VMD泄漏(诚实性)"
 )
 
 SUMMARY=results/ablation/summary.csv

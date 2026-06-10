@@ -1,0 +1,3 @@
+# 变体 C：固定门控（RQ1）—— 去可学习残差，仅用 FCM 隶属
+model:
+  learnable_gate: false

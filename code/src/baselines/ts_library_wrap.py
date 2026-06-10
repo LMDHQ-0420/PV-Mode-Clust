@@ -1,14 +1,9 @@
-"""强时序 SOTA 封装：DLinear / Informer / PatchTST / iTransformer / TimesNet。
+"""时序 baseline 统一封装：DLinear / 自包含DL系 / TSLib系。
 
-统一接口 forward(x)->[B,H]，统一在本项目 7:1:2 划分与评估口径下训练评估（§0.7）。
+自包含（无外部依赖）：DLinear, LSTM, LSTNet, TCN, NBEATS, NHiTS, Crossformer, NWPLSTMbaseline。
+TSLib依赖（需 TSLIB_PATH）：Informer, PatchTST, iTransformer, TimesNet。
 
-策略（诚实可运行）：
-  - **DLinear** 自包含实现（标准、简洁，始终可跑，作 Claude smoke test 默认 baseline）。
-  - **Informer/PatchTST/iTransformer/TimesNet** 走官方 Time-Series-Library(thuml) 集成：
-    设 config.baselines.tslib_path 或环境变量 TSLIB_PATH 指向其本地 clone，本封装按其
-    Exp 配置构建对应模型；未提供时给出明确提示（不伪造模型，避免研究诚信问题）。
-
-输入构造：用历史窗口 x_hist [B, L, d_hist] 预测未来功率 y [B, H]（日前形式）。
+输入构造：x_hist [B, L, d_hist]（± x_nwp_fut [B, H, d_nwp] 对 NWP-aware 模型）→ [B, H]。
 """
 from __future__ import annotations
 
@@ -26,8 +21,10 @@ from ..trainers.build import build_station_data
 from ..utils import metrics as M
 from ..utils.config import load_config
 from ..utils.seed import set_seed
+from .dl_baselines import build_dl_model, NWP_AWARE_MODELS
 
 TSLIB_MODELS = {"Informer", "PatchTST", "iTransformer", "TimesNet"}
+DL_MODELS = {"LSTM", "LSTNet", "TCN", "NBEATS", "NHiTS", "Crossformer", "NWPLSTMbaseline"}
 
 
 # ---------------- 自包含 DLinear ----------------
@@ -114,6 +111,8 @@ def build_ts_model(name, cfg, d_in):
     L = cfg["data"]["look_back"]; H = cfg["data"]["horizon"]
     if name == "DLinear":
         return DLinear(L, H, d_in)
+    if name in DL_MODELS:
+        return build_dl_model(name, cfg, d_in, d_nwp=7)
     if name in TSLIB_MODELS:
         return TSLibWrapper(name, cfg, d_in)
     raise ValueError(f"未知时序 baseline：{name}")
@@ -133,8 +132,15 @@ def train_eval(cfg, sid, name, seed):
     model = build_ts_model(name, cfg, d_in).to(device)
 
     tc = cfg["train"]
+    L = cfg["data"]["look_back"]
     opt = torch.optim.Adam(model.parameters(), lr=tc["lr"], weight_decay=tc["weight_decay"])
     from ..models.losses import prediction_loss
+    nwp_aware = name in NWP_AWARE_MODELS
+
+    def _forward(b):
+        if nwp_aware:
+            return model(_x_from_batch(b), b["x_nwp"][:, L:, :])
+        return model(_x_from_batch(b))
 
     def run(ds, train):
         loader = DataLoader(ds, batch_size=tc["batch_size"], shuffle=train)
@@ -142,7 +148,7 @@ def train_eval(cfg, sid, name, seed):
         tot, cnt = 0.0, 0
         for b in loader:
             b = {k: v.to(device) for k, v in b.items()}
-            yh = model(_x_from_batch(b))
+            yh = _forward(b)
             loss = prediction_loss(yh, b["y"], b["is_day"])
             if train:
                 opt.zero_grad(); loss.backward()
@@ -173,7 +179,7 @@ def train_eval(cfg, sid, name, seed):
     with torch.no_grad():
         for b in DataLoader(datasets["test"], batch_size=tc["batch_size"]):
             b = {k: v.to(device) for k, v in b.items()}
-            yh = model(_x_from_batch(b))
+            yh = _forward(b)
             preds.append(normalizer.inverse("power", yh.cpu().numpy()))
             trues.append(normalizer.inverse("power", b["y"].cpu().numpy()))
             days.append(b["is_day"].cpu().numpy())

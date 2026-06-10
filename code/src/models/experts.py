@@ -1,12 +1,16 @@
-"""模块 C2：轻量专家 GRU / TCN。
+"""模块 C：结构异质专家（防同构塌缩）。
 
-idea_report 3.7：K 个并行轻量专家，每个学一种区制下"特征→未来功率"。
-GRU 默认（稳快、序列不长够用），TCN 备选作加分消融。
+E-8 重塑 + 架构修正（2026-06-08）：
+诊断——日前 PV 中**未来段 NWP（辐照）是每一步功率的主导预测因子**，RF 之所以强是因为它
+对未来 NWP 窗口有完整逐步访问。原专家把"历史"当主序列、未来 NWP 仅经薄头注入，方向反了。
 
-关键（2026-06-08 代码审查 E-5 修订）：专家显式消费**未来段订正后 NWP**（日前天气预报），
-使订正在预测期真正生效（RQ1）、模型确为 NWP 气象驱动。
-  forward(z, x_fut)：z [B, L, d_in] 历史特征 + x_fut [B, H, d_fut] 未来订正 NWP → pred [B, H]。
-逻辑：编码历史得上下文 ctx → 广播到 H 步并与 x_fut 逐步拼接 → 共享 MLP 头逐步出功率。
+修正：所有专家以**未来段订正 NWP 序列 x_fut [B,H,d_fut] 为主序列**建模，历史 z 编码为
+上下文 ctx 作 FiLM/拼接条件。异质性体现在"如何处理未来 NWP 序列"：
+  - LocalConvExpert：小核因果卷积——局部天气平滑（多云突变）；
+  - DilatedTCNExpert：大膨胀感受野——日内长程趋势（晴天）；
+  - DirectMLPExpert：逐步 MLP（类 RF 直接映射）+ 历史统计条件。
+
+统一接口 forward(z, x_fut) -> [B,H]。
 """
 from __future__ import annotations
 
@@ -14,92 +18,111 @@ import torch
 import torch.nn as nn
 
 
-class _FutureHead(nn.Module):
-    """逐步预测头：拼 [上下文广播, 未来订正 NWP] → 每步功率。"""
+class _HistEncoder(nn.Module):
+    """历史 z [B,L,d_in] → 上下文 ctx [B,hidden]（GRU 末隐状态 + 全局统计）。"""
 
-    def __init__(self, hidden: int, d_fut: int):
+    def __init__(self, d_in: int, hidden: int):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden + d_fut, hidden), nn.ReLU(), nn.Linear(hidden, 1)
-        )
+        self.gru = nn.GRU(d_in, hidden, batch_first=True)
 
-    def forward(self, ctx: torch.Tensor, x_fut: torch.Tensor) -> torch.Tensor:
-        """ctx [B, hidden], x_fut [B, H, d_fut] → [B, H]。"""
-        H = x_fut.shape[1]
-        ctx_b = ctx.unsqueeze(1).expand(-1, H, -1)        # [B, H, hidden]
-        h = torch.cat([ctx_b, x_fut], dim=-1)              # [B, H, hidden+d_fut]
-        return self.mlp(h).squeeze(-1)                     # [B, H]
-
-
-class GRUExpert(nn.Module):
-    """单个 GRU 专家：编码历史窗口得上下文，逐步头结合未来订正 NWP 出 H 点。"""
-
-    def __init__(self, d_in: int, hidden: int, horizon: int, d_fut: int,
-                 num_layers: int = 1):
-        super().__init__()
-        self.gru = nn.GRU(d_in, hidden, num_layers=num_layers, batch_first=True)
-        self.head = _FutureHead(hidden, d_fut)
-
-    def forward(self, z: torch.Tensor, x_fut: torch.Tensor) -> torch.Tensor:
-        """z [B, L, d_in], x_fut [B, H, d_fut] → [B, H]。"""
-        out, h = self.gru(z)
-        ctx = out[:, -1, :]            # 末时刻隐状态 [B, hidden]
-        return self.head(ctx, x_fut)
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        out, _ = self.gru(z)
+        return out[:, -1, :]
 
 
 class _Chomp1d(nn.Module):
-    """裁掉因果卷积右侧 padding，保证因果。"""
-
     def __init__(self, chomp: int):
         super().__init__()
         self.chomp = chomp
 
     def forward(self, x):
-        return x[:, :, : -self.chomp] if self.chomp > 0 else x
+        return x[:, :, :-self.chomp] if self.chomp > 0 else x
 
 
-class TCNExpert(nn.Module):
-    """单个 TCN 专家：膨胀因果卷积堆叠得上下文，逐步头结合未来订正 NWP 出 H 点。"""
+class LocalConvExpert(nn.Module):
+    """小核卷积处理未来 NWP（局部天气），历史 ctx 作条件。"""
 
-    def __init__(self, d_in: int, hidden: int, horizon: int, d_fut: int,
-                 kernel: int = 3, levels: int = 3):
+    def __init__(self, d_in: int, d_fut: int, hidden: int, horizon: int,
+                 kernel: int = 3, **kw):
         super().__init__()
+        self.hist = _HistEncoder(d_in, hidden)
+        pad = kernel - 1
+        self.conv = nn.Sequential(
+            nn.Conv1d(d_fut + hidden, hidden, kernel, padding=pad), _Chomp1d(pad),
+            nn.ReLU(),
+            nn.Conv1d(hidden, hidden, kernel, padding=pad), _Chomp1d(pad), nn.ReLU(),
+        )
+        self.head = nn.Linear(hidden, 1)
+
+    def forward(self, z, x_fut):
+        ctx = self.hist(z)                                  # [B,hidden]
+        H = x_fut.shape[1]
+        x = torch.cat([x_fut, ctx.unsqueeze(1).expand(-1, H, -1)], dim=-1)  # [B,H,d_fut+hidden]
+        y = self.conv(x.transpose(1, 2)).transpose(1, 2)    # [B,H,hidden]
+        return self.head(y).squeeze(-1)
+
+
+class DilatedTCNExpert(nn.Module):
+    """大膨胀感受野 TCN 处理未来 NWP（长程趋势），历史 ctx 作条件。"""
+
+    def __init__(self, d_in: int, d_fut: int, hidden: int, horizon: int,
+                 kernel: int = 3, levels: int = 4, **kw):
+        super().__init__()
+        self.hist = _HistEncoder(d_in, hidden)
         layers = []
-        ch_in = d_in
+        ch = d_fut + hidden
         for i in range(levels):
-            dilation = 2 ** i
-            pad = (kernel - 1) * dilation
-            layers += [
-                nn.Conv1d(ch_in, hidden, kernel, padding=pad, dilation=dilation),
-                _Chomp1d(pad),
-                nn.ReLU(),
-            ]
-            ch_in = hidden
+            dil = 2 ** i
+            pad = (kernel - 1) * dil
+            layers += [nn.Conv1d(ch, hidden, kernel, padding=pad, dilation=dil),
+                       _Chomp1d(pad), nn.ReLU()]
+            ch = hidden
         self.tcn = nn.Sequential(*layers)
-        self.head = _FutureHead(hidden, d_fut)
+        self.head = nn.Linear(hidden, 1)
 
-    def forward(self, z: torch.Tensor, x_fut: torch.Tensor) -> torch.Tensor:
-        """z [B, L, d_in], x_fut [B, H, d_fut] → [B, H]。"""
-        x = z.transpose(1, 2)          # [B, d_in, L]
-        y = self.tcn(x)                # [B, hidden, L]
-        ctx = y[:, :, -1]              # [B, hidden]
-        return self.head(ctx, x_fut)
+    def forward(self, z, x_fut):
+        ctx = self.hist(z)
+        H = x_fut.shape[1]
+        x = torch.cat([x_fut, ctx.unsqueeze(1).expand(-1, H, -1)], dim=-1)
+        y = self.tcn(x.transpose(1, 2)).transpose(1, 2)
+        return self.head(y).squeeze(-1)
 
 
-def build_expert(expert_cfg: dict, d_in: int, horizon: int, d_fut: int) -> nn.Module:
-    """按 config 造一个专家。
+class DirectMLPExpert(nn.Module):
+    """逐步 MLP（类 RF 直接映射）：每步未来 NWP + 历史 ctx → 功率。"""
 
-    Args:
-        d_in:  历史段编码输入维度。
-        d_fut: 未来段订正 NWP 维度（= d_nwp）。
-    """
-    t = expert_cfg.get("type", "gru").lower()
-    hidden = expert_cfg.get("hidden", 64)
-    if t == "gru":
-        return GRUExpert(d_in, hidden, horizon, d_fut,
-                         num_layers=expert_cfg.get("num_layers", 1))
-    if t == "tcn":
-        return TCNExpert(d_in, hidden, horizon, d_fut,
-                         kernel=expert_cfg.get("tcn_kernel", 3),
-                         levels=expert_cfg.get("tcn_levels", 3))
-    raise ValueError(f"未知专家类型：{t}")
+    def __init__(self, d_in: int, d_fut: int, hidden: int, horizon: int, **kw):
+        super().__init__()
+        self.hist = _HistEncoder(d_in, hidden)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_fut + hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, z, x_fut):
+        ctx = self.hist(z)
+        H = x_fut.shape[1]
+        x = torch.cat([x_fut, ctx.unsqueeze(1).expand(-1, H, -1)], dim=-1)
+        return self.mlp(x).squeeze(-1)
+
+
+_EXPERT_REGISTRY = {
+    "local_conv": LocalConvExpert,
+    "dilated_tcn": DilatedTCNExpert,
+    "direct_mlp": DirectMLPExpert,
+    # 兼容旧名（映射到新实现，保持 config 不炸）
+    "short_gru": LocalConvExpert,
+    "long_tcn": DilatedTCNExpert,
+    "freq": DirectMLPExpert,
+}
+
+
+def build_experts(expert_types, d_in: int, horizon: int, d_fut: int,
+                  hidden: int = 64, short_window: int = 48) -> nn.ModuleList:
+    """按类型列表构造异质专家（统一以未来 NWP 为主序列）。"""
+    experts = []
+    for t in expert_types:
+        cls = _EXPERT_REGISTRY[t]
+        experts.append(cls(d_in=d_in, d_fut=d_fut, hidden=hidden, horizon=horizon))
+    return nn.ModuleList(experts)

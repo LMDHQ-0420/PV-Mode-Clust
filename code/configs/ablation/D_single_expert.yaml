@@ -1,3 +1,0 @@
-# 变体 D：单模型（RQ2）——K=1 单专家，无门控
-model:
-  single_expert: true

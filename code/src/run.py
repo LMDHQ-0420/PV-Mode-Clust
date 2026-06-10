@@ -1,9 +1,9 @@
 """统一入口 —— 训练 / 评估 / 可解释导出。
 
 子命令：
-  train     单站两阶段训练（corrector → predictor），可指定 seed。
+  train     单站单阶段联合训练（订正+异质专家+可学习门控），可指定 seed。
   evaluate  加载 best_{sid}.pth，日前协议评估，落 eval json + predictions csv。
-  interpret 导出 aux 中间量（区制隶属/门控权重/订正对比/个案）供 4 图。
+  interpret 导出 aux 中间量（区制隶属/门控权重/订正对比/个案）供 5 图。
 
 被 scripts/*.sh 调用，不含业务逻辑以外的参数拼装。
 """
@@ -19,9 +19,8 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from .trainers.build import build_models, build_station_data
-from .trainers.corrector_trainer import CorrectorTrainer
-from .trainers.predictor_trainer import PredictorTrainer
+from .trainers.build import build_model, build_station_data
+from .trainers.joint_trainer import JointTrainer
 from .utils import metrics as M
 from .utils.config import load_config
 from .utils.logger import Logger
@@ -37,21 +36,14 @@ def cmd_train(cfg, sid, seed):
     set_seed(seed)
     device = cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
     datasets, meta = build_station_data(cfg, sid)
-    corrector, model = build_models(cfg, meta["dims"])
+    corrector, model = build_model(cfg, meta["dims"])
 
     log_path = os.path.join(cfg["paths"]["logs"], f"train_{sid}_seed{seed}_{_ts()}.csv")
     logger = Logger(log_path)
 
-    # 阶段一：订正器（use_corrector=False 时跳过）
-    if cfg["model"]["use_corrector"]:
-        ct = CorrectorTrainer(corrector, datasets, cfg, sid, device, logger)
-        ct.fit()
-        print(f"[train] {sid} seed{seed}: corrector done")
-
-    # 阶段二：专家+门控（共享同一 corrector 实例，已训）
-    pt = PredictorTrainer(model, datasets, cfg, sid, meta["capacity"], device, logger)
-    ckpt = pt.fit()
-    print(f"[train] {sid} seed{seed}: predictor done → {ckpt}")
+    trainer = JointTrainer(model, datasets, cfg, sid, meta["capacity"], device, logger)
+    ckpt = trainer.fit()
+    print(f"[train] {sid} seed{seed}: joint done → {ckpt}")
     return ckpt
 
 
@@ -61,7 +53,7 @@ def cmd_evaluate(cfg, sid, seed, ckpt=None):
     set_seed(seed)
     device = cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
     datasets, meta = build_station_data(cfg, sid)
-    _, model = build_models(cfg, meta["dims"])
+    _, model = build_model(cfg, meta["dims"])
     ckpt = ckpt or os.path.join(cfg["paths"]["checkpoints"], f"best_{sid}.pth")
     model.load_state_dict(torch.load(ckpt, map_location=device))
     model.to(device).eval()
@@ -111,7 +103,7 @@ def cmd_interpret(cfg, sid, seed, ckpt=None):
     set_seed(seed)
     device = cfg["train"]["device"] if torch.cuda.is_available() else "cpu"
     datasets, meta = build_station_data(cfg, sid)
-    _, model = build_models(cfg, meta["dims"])
+    _, model = build_model(cfg, meta["dims"])
     ckpt = ckpt or os.path.join(cfg["paths"]["checkpoints"], f"best_{sid}.pth")
     model.load_state_dict(torch.load(ckpt, map_location=device))
     model.to(device).eval()
@@ -119,35 +111,38 @@ def cmd_interpret(cfg, sid, seed, ckpt=None):
     out_dir = cfg["paths"]["interpret"]
     os.makedirs(out_dir, exist_ok=True)
     loader = DataLoader(datasets["test"], batch_size=cfg["train"]["batch_size"])
+    H = cfg["data"]["horizon"]
+    irrad_idx = meta["dims"]["irrad_idx"]
 
-    u_list, gate_list, corr_list, nwp_list, lmd_list = [], [], [], [], []
-    preds_k_list = []
+    u_list, gate_list = [], []
+    corr_list, nwp_list, lmd_list, gamma_list = [], [], [], []
     for batch in loader:
         b = {k: v.to(device) for k, v in batch.items()}
         y_hat, aux = model(b)
-        H = cfg["data"]["horizon"]
-        u_list.append(aux["u"][:, -H:, :].cpu().numpy().mean(axis=1))   # [B,K] 预测段隶属
-        gate_list.append(aux["gate"].cpu().numpy())                      # [B,K]
-        preds_k_list.append(aux["preds"].cpu().numpy())                 # [B,H,nE]
-        if aux["corr_paired"] is not None:
-            corr_list.append(aux["corr_paired"][:, -H:, :].cpu().numpy())
-            nwp_list.append(b["nwp_paired"][:, -H:, :].cpu().numpy())
-            lmd_list.append(b["lmd_paired"][:, -H:, :].cpu().numpy())
+        u_list.append(aux["u"][:, -H:, :].cpu().numpy().mean(axis=1))   # [B,K]
+        gate_list.append(aux["gate"].cpu().numpy())                      # [B,n_experts]
+        if aux["x_corr"] is not None and aux["gamma"] is not None:
+            corr_list.append(aux["x_corr"][:, -H:, irrad_idx].cpu().numpy())  # 订正后辐照
+            nwp_list.append(b["x_nwp"][:, -H:, irrad_idx].cpu().numpy())      # 原始辐照
+            lmd_list.append(b["irrad_lmd"][:, -H:].cpu().numpy())             # LMD 辐照
+            gamma_list.append(aux["gamma"][:, -H:, 0].cpu().numpy())          # 残差门控
 
     u_arr = np.concatenate(u_list)
     gate_arr = np.concatenate(gate_list)
-    # 图1：区制隶属时序
+    # 图1：区制隶属
     pd.DataFrame(u_arr, columns=[f"regime_{k}" for k in range(u_arr.shape[1])]).to_csv(
         os.path.join(out_dir, f"regime_membership_{sid}.csv"), index=False)
-    # 图2：天气×专家权重（这里用平均门控权重）
+    # 图2：天气×专家最终门控权重 g
     pd.DataFrame(gate_arr, columns=[f"expert_{k}" for k in range(gate_arr.shape[1])]).to_csv(
         os.path.join(out_dir, f"expert_weight_{sid}.csv"), index=False)
-    # 图3：订正前后对比
+    # 图3：订正前后对比 + 残差门控 γ
     if corr_list:
-        corr = np.concatenate(corr_list).mean(axis=(0, 1))
-        nwp = np.concatenate(nwp_list).mean(axis=(0, 1))
-        lmd = np.concatenate(lmd_list).mean(axis=(0, 1))
-        pd.DataFrame({"nwp_raw": nwp, "nwp_corrected": corr, "lmd_true": lmd}).to_csv(
+        corr = np.concatenate(corr_list).mean(axis=0)
+        nwp = np.concatenate(nwp_list).mean(axis=0)
+        lmd = np.concatenate(lmd_list).mean(axis=0)
+        gamma = np.concatenate(gamma_list).mean(axis=0)
+        pd.DataFrame({"nwp_raw": nwp, "nwp_corrected": corr,
+                      "lmd_true": lmd, "gamma": gamma}).to_csv(
             os.path.join(out_dir, f"correction_compare_{sid}.csv"), index=False)
     print(f"[interpret] {sid}: 中间量导出 → {out_dir}")
 
@@ -155,7 +150,7 @@ def cmd_interpret(cfg, sid, seed, ckpt=None):
 # ---------------- CLI ----------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["train", "evaluate", "interpret"])
+    ap.add_argument("cmd", choices=["train", "evaluate", "interpret", "stack"])
     ap.add_argument("--config", default="configs/default.yaml")
     ap.add_argument("--override", default=None, help="消融变体 yaml")
     ap.add_argument("--station", required=True)
@@ -178,6 +173,9 @@ def main():
         cmd_train(cfg, args.station, args.seed)
     elif args.cmd == "evaluate":
         cmd_evaluate(cfg, args.station, args.seed, args.ckpt)
+    elif args.cmd == "stack":
+        from .stacking import run_stacking
+        run_stacking(cfg, args.station, args.seed)
     else:
         cmd_interpret(cfg, args.station, args.seed, args.ckpt)
 

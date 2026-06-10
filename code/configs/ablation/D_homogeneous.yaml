@@ -1,0 +1,3 @@
+# 变体 D：同构专家（RQ1）—— 三专家全为 local_conv
+model:
+  expert_types: [local_conv, local_conv, local_conv]

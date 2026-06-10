@@ -1,6 +1,11 @@
-# Implementation Guide — 天气区制感知与 NWP 误差订正的软门控多专家光伏日前功率预测
-> 生成时间：2026-06-07 | 策略：从头构建 | 状态：PENDING_REVIEW
+# Implementation Guide — 天气区制感知的可学习软门控异质多专家光伏日前功率预测（NWP 误差自适应订正）
+> 生成时间：2026-06-07 | 最后修订：2026-06-08（E-8 回溯，按重塑后方法重写）| 策略：从头构建 | 状态：PENDING_REVIEW
 > 关联实验设计：docs/idea_report.md Part 3
+>
+> **重塑要点（相对初版）**：① 删除因果 VMD 模块（实证无增益，仅留泄漏演示消融）；② 订正器改为
+> 自适应辅助机制（只订辐照 + 大误差区掩码 + 残差门控 + 幅度约束）；③ 专家改为结构异质（短窗 GRU /
+> 长窗 TCN / 频域分支）；④ 门控改为可学习（FCM 先验 + MLP 残差）；⑤ 训练改为**单阶段端到端联合**
+> （L = L_pred + λ·L_corr），删两阶段冻结。
 
 ---
 
@@ -18,20 +23,21 @@ code/
 │   │   ├── pvod_dataset.py           # PVOD 数据集类：读取、划分、滑窗，产出训练样本
 │   │   ├── preprocess.py             # 原始 PVOD → 清洗对齐（异常值/缺失/夜间标记），落盘缓存
 │   │   ├── fcm_regime.py             # FCM 软天气区制：训练中心、产出软隶属 u(t)（模块A）
-│   │   ├── causal_vmd.py             # 因果滑窗 VMD：对历史功率/NWP 做无泄漏多尺度分解（模块C1）
+│   │   ├── causal_vmd.py             # [仅消融H] 全序列/因果 VMD，泄漏演示用，不入主流程
 │   │   └── transforms.py            # Max-Min 归一化（按训练集统计），反归一化
 │   ├── models/
-│   │   ├── corrector.py              # NWP 误差订正器 g(NWP,u)（模块B，第一阶段）
-│   │   ├── experts.py               # 轻量专家 GRU/TCN（模块C2）
-│   │   ├── gated_moe.py             # 软门控多专家整体模型（模块D，组装 A/C1/C2/D）
-│   │   └── losses.py               # L_corr（订正）、L_pred（预测）
+│   │   ├── corrector.py              # 自适应辐照订正：corr=NWP+gate·Δ，仅大误差区+幅度约束（模块B）
+│   │   ├── experts.py               # 异质专家：短窗GRU/长窗TCN/频域分支（模块C）
+│   │   ├── gated_moe.py             # 可学习软门控异质MoE整体模型（组装 A/B/C/D，辐照锚定可选）
+│   │   └── losses.py               # L_pred（预测,可选Huber）、L_corr（订正辅助，仅大误差区+幅度惩罚）
+│   ├── stacking.py                  # 模块E：深度MoE×RF 互补 stacking（验证集拟合权重）—SOTA最终模型
 │   ├── trainers/
-│   │   ├── corrector_trainer.py     # 第一阶段：训练订正器
-│   │   └── predictor_trainer.py     # 第二阶段：训练专家+门控（冻结订正器）
+│   │   └── joint_trainer.py         # 单阶段端到端联合训练（L=L_pred+λL_corr）
 │   ├── baselines/
-│   │   ├── ts_library_wrap.py       # 强时序 SOTA 封装（DLinear/Informer/PatchTST/iTransformer/TimesNet）
-│   │   ├── rf_baseline.py           # 历史功率 RF、RF+原始NWP（前身基线）
-│   │   └── correction_baselines.py  # 线性/QM/RF 订正基线
+│   │   ├── dl_baselines.py          # 自包含DL baseline（LSTM/LSTNet/TCN/NBEATS/NHiTS/Crossformer/NWPLSTMbaseline）
+│   │   ├── ts_library_wrap.py       # 统一训练封装（DLinear + dl_baselines + 可选TSLib系）
+│   │   ├── rf_baseline.py           # 历史功率 RF、RF+NWP（日前96步多步，同口径）
+│   │   └── correction_baselines.py  # 线性/QM/RF 订正基线（订正质量评估）
 │   └── utils/
 │       ├── metrics.py               # RMSE/MAE/ACC/Q_R/r/R²（仅白天）
 │       ├── seed.py                  # 固定随机种子
@@ -40,7 +46,7 @@ code/
 │   ├── preprocess.sh                # 运行预处理，生成 data/processed/
 │   ├── train_main.sh                # 训练本文完整方法（主实验）
 │   ├── train_baselines.sh           # 训练所有 baseline
-│   ├── ablation.sh                  # 批量消融 A–G
+│   ├── ablation.sh                  # 批量消融 A–H
 │   ├── evaluate.sh                  # 评估指定 checkpoint
 │   └── interpret.sh                 # 导出可解释中间量、绘 4 张图
 ├── notebooks/
@@ -49,7 +55,7 @@ code/
 │   └── 03_results_demo.ipynb        # 主表/消融/泄漏演示/可解释4图
 ├── configs/
 │   ├── default.yaml                 # 主方法默认超参
-│   └── ablation/                    # A–G 各变体 config（覆盖 default 部分项）
+│   └── ablation/                    # A–H 各变体 config（覆盖 default 部分项）
 ├── data/                            # [gitignored] processed/ 缓存 + FCM/VMD 中间产物
 ├── results/                         # [gitignored] checkpoints/eval/predictions/ablation/figures
 ├── logs/                            # [gitignored] 训练曲线
@@ -64,16 +70,16 @@ code/
 | `src/data/preprocess.py` | 原始 PVOD 清洗对齐 | `dataset/station*.csv` | `data/processed/{sid}.csv` | `scripts/preprocess.sh` |
 | `src/data/pvod_dataset.py` | 数据集类：划分+滑窗 | processed csv | `(x, y, aux)` tensor | trainer/eval |
 | `src/data/fcm_regime.py` | FCM 软区制 | 气象向量 | 软隶属 `u(t)` [N,K]、中心 | dataset / model |
-| `src/data/causal_vmd.py` | 因果滑窗 VMD | 历史功率/NWP 序列 | 多尺度模态 `ν(t)` | dataset |
+| `src/data/causal_vmd.py` | [仅消融H] VMD | 功率序列 | 模态特征 | dataset（leak_vmd 开关） |
 | `src/data/transforms.py` | 归一化 | 原始数值 | 归一化值 + 统计量 | dataset / eval |
-| `src/models/corrector.py` | NWP 误差订正器 | `[NWP, u]` | 订正后 NWP | corrector_trainer / gated_moe |
-| `src/models/experts.py` | 轻量专家 GRU/TCN | `z_t` | 各专家预测 | gated_moe |
-| `src/models/gated_moe.py` | 软门控多专家完整模型 | `z_t, u` | 日前功率 ŷ | predictor_trainer / eval |
-| `src/models/losses.py` | 损失函数 | pred,target | 标量 | trainers |
-| `src/trainers/corrector_trainer.py` | 阶段一训练 | corrector,data | 订正器 ckpt | train_main.sh |
-| `src/trainers/predictor_trainer.py` | 阶段二训练 | gated_moe,data | 完整模型 ckpt | train_main.sh |
-| `src/baselines/ts_library_wrap.py` | 强时序 SOTA 封装 | x | 预测 | train_baselines.sh |
-| `src/baselines/rf_baseline.py` | RF 基线 | 特征 | 预测 | train_baselines.sh |
+| `src/models/corrector.py` | 自适应辐照订正 | `[NWP辐照, u]` | 订正后辐照 + 残差门控γ | gated_moe |
+| `src/models/experts.py` | 异质专家(GRU/TCN/频域) | `z_t, x_fut` | 各专家预测 | gated_moe |
+| `src/models/gated_moe.py` | 可学习软门控异质MoE | `batch` | 日前功率 ŷ + aux | joint_trainer / eval |
+| `src/models/losses.py` | 损失函数 | pred,target,mask | 标量 | joint_trainer |
+| `src/trainers/joint_trainer.py` | 单阶段联合训练 | model,data | 完整模型 ckpt | train_main.sh |
+| `src/baselines/dl_baselines.py` | 自包含DL baseline（7模型） | x_hist(±x_nwp_fut) | [B,H]预测 | train_baselines.sh |
+| `src/baselines/ts_library_wrap.py` | 统一训练/评估封装 | x | 预测+JSON | train_baselines.sh |
+| `src/baselines/rf_baseline.py` | RF 基线(日前多步) | 窗口特征 | [B,H]预测 | train_baselines.sh |
 | `src/baselines/correction_baselines.py` | 订正基线 | NWP,LMD | 订正后 NWP | train_baselines.sh |
 | `src/utils/metrics.py` | 评估指标 | pred,true,mask | dict | trainer/eval |
 | `src/utils/seed.py` | 固定种子 | seed | — | 所有入口 |
@@ -92,7 +98,7 @@ code/
 | `scripts/` | 只拼参数调 Python 模块 |
 | `notebooks/` | 关键步骤可视化，不被生产代码依赖 |
 
-> 设计依据：模块边界对应 idea_report Part 2 Method 的四模块（A=fcm_regime, B=corrector, C1=causal_vmd, C2=experts, D=gated_moe），一一可追溯，便于消融时按模块开关。
+> 设计依据：模块边界对应 idea_report Part 2 Method 的模块（A=fcm_regime, B=corrector 自适应订正, C=experts 异质专家, D=gated_moe 可学习软门控），一一可追溯，便于消融时按模块开关。VMD 已退出主流程，仅 causal_vmd.py 保留供消融 H（泄漏演示）。
 
 ---
 
@@ -106,24 +112,25 @@ code/
             标记夜间（lmd_totalirrad==0），不删行（前身验证行数一致）
       落盘：data/processed/{sid}.csv
   → 划分（pvod_dataset.py，按时间每站独立 7:1:2）
-      train 段统计量用于归一化与 FCM/VMD 拟合（防泄漏）
+      train 段统计量用于归一化与 FCM 拟合（防泄漏）
   → 归一化（transforms.py，Max-Min，按 train 段统计）
   → FCM 软区制（fcm_regime.py）
       train 段拟合 K 个中心 → 全段算软隶属 u(t)∈[N,K]
-  → 因果 VMD（causal_vmd.py）
-      对历史功率/NWP 滑窗(τ≤t)分解 → 多尺度模态 ν(t)
+  → 大误差区掩码（pvod_dataset.py）
+      train 段辐照误差 |NWP-LMD| 的分位阈值 → 全段标记 m_t∈{0,1}
   → 滑窗（pvod_dataset.py）
       look-back L（192/384）→ 预测 H=96；步长1
   → 模型输入
       x_nwp:  [B, L+H, D_nwp]   未来NWP预报（日前可得）
       x_hist: [B, L, D_hist]    历史功率+历史NWP+lag/统计特征
-      nu:     [B, L, M]         因果VMD多尺度模态
-      u:      [B, L+H, K]       软隶属（门控+订正条件）
+      u:      [B, L+H, K]       软隶属（门控先验+订正条件）
       y:      [B, H]            未来96点功率（标签）
-      lmd_paired: [B, L+H, D_p] 配对实测（仅训练阶段，订正监督用）
+      irrad_lmd: [B, L+H]       配对实测辐照（仅训练，订正监督）
+      big_err_mask: [B, L+H]    大误差区掩码（仅训练，订正损失用）
+      is_day: [B, H]            白天掩码（评估用）
 ```
 
-> 关键决策：(1) 所有统计量（归一化、FCM中心、VMD）**只用 train 段拟合**，从根上杜绝泄漏（RQ3）；(2) `x_nwp` 含未来段（日前预报可得），`lmd_paired` 仅训练用、推理不取（部署前提）；(3) 夜间点保留但评估时按 mask 排除。
+> 关键决策：(1) 所有统计量（归一化、FCM中心、大误差区阈值）**只用 train 段拟合**，从根上杜绝泄漏；(2) `x_nwp` 含未来段（日前预报可得），订正监督用的 LMD 辐照仅训练取、推理不取（部署前提）；(3) 夜间点保留但评估按 mask 排除；(4) **VMD 已退出主流程**（仅 leak_vmd 消融时由 causal_vmd 提供模态）。
 
 ---
 
@@ -190,88 +197,105 @@ code/
 **`global_vmd_features(series, K_modes, alpha) -> ndarray`**（消融变体 E 用）
 - 功能：对**整条序列**（含测试段）一次性 VMD，**故意引入泄漏**，仅供消融对照。
 
-> 这是消融 E 的实现入口，演示"虚高精度"陷阱（idea_report Part 3 §2）。
+> 这是消融 H 的实现入口，演示"虚高精度"陷阱（idea_report Part 3 §2）。
 
 ### 3.5 `src/data/pvod_dataset.py`
 
 **`PVODDataset(Dataset)`**
-- 初始化参数：`sid`、`split`（train/val/test）、`look_back L`、`horizon H=96`、`fcm`（已 fit 的 FCMRegime）、`normalizer`、`use_vmd`（bool）、`leak_vmd`（bool，消融E）、`return_lmd`（bool，训练阶段订正用）。
+- 初始化参数：`sid`、`split`（train/val/test）、`look_back L`、`horizon H=96`、`fcm`（已 fit 的 FCMRegime）、`normalizer`、`big_err_quantile`（大误差区分位，默认0.6）、`leak_vmd`（bool，消融H）、`return_lmd`（bool，订正监督用）。
 - 初始化逻辑：
   1. 读 `data/processed/{sid}.csv`，按时间 7:1:2 取对应 split 段。
   2. 套用 normalizer（train 统计量）。
   3. 算 FCM 软隶属 `u`（NWP 特征）。
-  4. 若 use_vmd：加载/计算 VMD 模态 `ν`（leak_vmd 决定因果/全序列）。
+  4. **大误差区掩码**：在 train 段算白天辐照误差 |NWP_irrad−LMD_irrad| 的 `big_err_quantile` 分位阈值，对全段标记 `big_err_mask`（>阈值且白天→1）。
   5. 构造 lag/滑动统计特征（借鉴前身 `extract_features`：hour、lag_1..4、rolling_change_rate）。
+  6. 若 `leak_vmd`（仅消融H）：加载/计算全序列 VMD 模态拼进 x_hist。
 - `__len__`：滑窗样本数 = `len(seg) − L − H + 1`。
 - `__getitem__(idx) -> dict`：返回
-  - `x_nwp` [L+H, D_nwp]、`x_hist` [L, D_hist]、`nu` [L, M]、`u` [L+H, K]、`y` [H]、（若 return_lmd）`lmd_paired` [L+H, D_p]、`capacity`（标量，评估归一）、`is_day` [H]（白天掩码）。
+  - `x_nwp` [L+H, D_nwp]、`x_hist` [L, D_hist]、`u` [L+H, K]、`y` [H]、（若 return_lmd）`irrad_lmd` [L+H]、`big_err_mask` [L+H]、`capacity`（标量）、`is_day` [H]（白天掩码）。
 
 > 借鉴前身 `extract_features` / `split_train_test`，但划分改为 7:1:2 时间顺序（Part 3 §0.7），并新增 u/ν/lmd 输出。
 
-### 3.6 `src/models/corrector.py`（模块 B，第一阶段）
+### 3.6 `src/models/corrector.py`（模块 B，自适应辐照订正）
 
-**`NWPCorrector(nn.Module)`**
-- 初始化参数：`d_nwp`、`K`（区制数）、`hidden=128`、`d_paired`（可订正气象维度）。
-- `forward(x_nwp, u) -> x_corr`：
+**`AdaptiveIrradCorrector(nn.Module)`**
+- 初始化参数：`d_nwp`、`K`（区制数）、`hidden=128`、`irrad_idx`（辐照列在 d_nwp 中的索引，**只订这一列**）。
+- `forward(x_nwp, u) -> (x_corr, gamma, delta)`：
   - 输入：`x_nwp` [B, T, d_nwp]、`u` [B, T, K]
   - 逻辑：
-    1. 拼接 `[x_nwp, u]` → MLP/小型时序层，输出订正量 `ê` [B, T, d_paired]。
-    2. `x_corr_paired = x_nwp_paired − ê`（仅订正可配对列）。
-    3. 不可配对列（风速风向等）原样透传。
-  - 输出：`x_corr` [B, T, d_nwp]（订正后 NWP，供第二阶段）。
+    1. 拼接 `[x_nwp_irrad, u]` → MLP，输出两路：订正量 `Δ` [B, T, 1] 与残差门控 logit；`gamma = sigmoid(logit)` ∈[0,1]。
+    2. `x_corr_irrad = x_nwp_irrad + gamma · Δ`（仅订正辐照列；`+` 号，残差形式）。
+    3. 其余列（温度/气压/风等）原样透传。
+  - 输出：`x_corr` [B, T, d_nwp]（仅辐照列被订正）、`gamma` [B,T,1]（残差门控,可解释）、`delta` [B,T,1]。
 
-> 核心（RQ1，idea_report 3.6）：仅吃 `[NWP, u]`（推理可得），不含未来 LMD。区制条件 u 使订正分天气自适应 [3,4]。
+> 核心（RQ2，idea_report 3.6）：仅吃 `[NWP辐照, u]`（推理可得），仅订辐照（与功率强相关），残差门控 `gamma` 让订正"无话可说时闭嘴"。订正辅助损失仅在大误差区（掩码 m_t）计入 + 幅度惩罚 β(γΔ)²（见 3.9）。**端到端联合训练**，不再两阶段冻结。`gamma` 导出供可解释图3。
 
-### 3.7 `src/models/experts.py`（模块 C2）
+### 3.7 `src/models/experts.py`（模块 C，异质专家——以未来 NWP 为主序列）
 
-**`GRUExpert(nn.Module)` / `TCNExpert(nn.Module)`**
-- 初始化参数：`d_in`（历史编码输入维）、`hidden`、`horizon H`、`d_fut`（未来段订正 NWP 维度=d_nwp）、（TCN）`kernel/levels`。
-- `forward(z, x_fut) -> pred`：
-  - 输入：`z` [B, L, d_in]（历史段特征：订正后历史 NWP + x_hist + nu）、`x_fut` [B, H, d_fut]（**未来段订正后 NWP**，即日前天气预报）。
-  - 逻辑：1) 编码历史 `z`（GRU 末隐状态 / TCN 末步）得上下文向量 `ctx` [B, hidden]；
-         2) 把 `ctx` 广播到 H 步，与未来段订正 NWP `x_fut` 逐步拼接 → [B, H, hidden+d_fut]；
-         3) 共享 MLP 头逐步映射到功率 → `pred` [B, H]。
-- 默认 GRU；config `expert.type ∈ {gru,tcn}` 切换。
+**关键（实证修正）**：日前 PV 中未来 NWP 是主导预测因子，故所有专家以**未来段订正 NWP 序列 `x_fut` [B,H,d_fut] 为主建模序列**，历史 `z` 经 `_HistEncoder`（GRU）编码为上下文 `ctx [B,hidden]` 作逐步条件（广播到 H 步与 x_fut 拼接）。统一接口 `forward(z, x_fut) -> [B,H]`。三类专家在"如何处理 x_fut 序列"上结构异质：
 
-> idea_report 3.7：K 个并行轻量专家，每个学一种区制下"特征→未来功率"。**关键修订（2026-06-08 代码审查 E-5）**：专家显式消费**未来段订正后 NWP**（日前天气预报），使订正在预测期真正生效（RQ1）、模型确为 NWP 气象驱动；原"专家仅用历史段"会让订正对预测无贡献，与立论矛盾，故修正。GRU 默认（稳快、序列不长够用），TCN 备选作加分消融。
+**`LocalConvExpert`**（小核因果卷积，捕局部快速波动）
+- `[x_fut ‖ ctx广播]` → 两层小核(kernel=3)因果卷积 → 逐步线性头。
 
-### 3.8 `src/models/gated_moe.py`（模块 D，完整模型）
+**`DilatedTCNExpert`**（大膨胀感受野，捕日内长程趋势）
+- `[x_fut ‖ ctx广播]` → levels=4 膨胀因果卷积(dilation 1/2/4/8) → 逐步线性头。
+
+**`DirectMLPExpert`**（逐步 MLP，类 RF 直接映射）
+- 每步 `[x_fut_h ‖ ctx]` → 3 层 MLP → 功率。
+
+- `build_experts(expert_types, ...)` 按 `model.expert_types`（默认 `[local_conv, dilated_tcn, direct_mlp]`）构造；消融 D（同构）时全用同一类型。注册表兼容旧名 `short_gru/long_tcn/freq`（映射到新实现）。
+
+> idea_report 3.7：以未来 NWP 为主序列的修正使大站 +1.7 ACC；结构异质防塌缩 [10,14]。
+
+### 3.8 `src/models/gated_moe.py`（模块 D，可学习软门控异质 MoE）
 
 **`GatedMoEForecaster(nn.Module)`**
-- 初始化参数：`corrector`（可冻结）、`K`、`expert_cfg`、`d_hist`、`M`（VMD模态数）、`use_vmd`、`gate_mode ∈ {soft,hard}`（消融C）、`single_expert`（消融D）。
+- 初始化参数：`corrector`、`K`、`expert_types`（异质专家类型列表）、`d_nwp`、`d_hist`、`horizon`、`gate_mode ∈ {soft,hard}`（消融B）、`learnable_gate`（bool，消融C关）、`single_expert`（消融E）、`use_corrector`（消融F关）、`gate_hidden`。
 - `forward(batch) -> (y_hat, aux)`：
-  1. `x_corr = corrector(x_nwp, u)`（或 batch 已传订正后，视训练阶段）。`x_corr` 含历史段与未来段。
-  2. 构造专家历史输入 `z = concat([x_corr 历史段, x_hist, nu])` [B, L, d_in]；
-     取未来段订正 NWP `x_fut = x_corr[:, L:, :]` [B, H, d_nwp]（**日前预报，驱动预测**）。
-  3. 每个专家 `f_k(z, x_fut)` → `pred_k` [B, H]，堆叠 [B, H, K]。
-  4. 门控权重 `g`：soft=用 u 在预测段的隶属（或对 L 段池化）；hard=argmax(u) one-hot；single=K=1。
-  5. `y_hat = Σ_k g_k · pred_k` [B, H]。
-  6. `aux` 收集 `u`、各 `pred_k`、`x_corr`（可解释导出用）。
-- 输出：`y_hat` [B, H]、`aux` dict。
+  1. 若 `use_corrector`：`x_corr, gamma, delta = corrector(x_nwp, u)`；否则 `x_corr=x_nwp`。
+  2. 专家历史输入 `z = concat([x_corr 历史段, x_hist])` [B, L, d_in]；`x_fut = x_corr[:, L:, :]` [B,H,d_nwp]。
+  3. 各异质专家 `f_k(z, x_fut)` → `pred_k` [B,H]，堆叠 [B,H,K]。
+  4. **可学习软门控**：`u_fut = u[:, -H:, :].mean(1)` [B,K]；
+     - learnable_gate=True：`g = softmax(α·log(u_fut+ε) + MLP_ψ(x_nwp_pool))`，α 可学习标量；
+     - learnable_gate=False（消融C）：`g = u_fut`（固定外部隶属）；
+     - gate_mode=hard（消融B）：对 g 取 argmax one-hot；
+     - single_expert=True（消融E）：K=1，g=1。
+  5. `moe_out = Σ_k g_k · pred_k` [B,H]。
+  6. 辐照锚定（`irrad_anchor`，默认 False）：True 时 `y_hat = softplus(gain)·x_corr未来辐照 + moe_out`；False 时 `y_hat = moe_out`。
+  7. `aux` 收集 `u`、`g`、各 `pred_k`、`x_corr`、`gamma`（可解释导出用）。
+- 输出：`y_hat` [B,H]、`aux` dict。
 
-> 核心（RQ2，idea_report 3.7）：u 同时作门控权重，软混合专家。`gate_mode/single_expert` 是消融 C/D 的开关。`aux` 为可解释 4 图预留接口（Part 3 §3）。
+> 核心（RQ1，idea_report 3.7）：FCM 软隶属作可解释先验 + 可学习残差门控，软混合异质专家。`gate_mode/learnable_gate/single_expert/use_corrector/irrad_anchor` 直通消融 B/C/E/F/I；同构专家消融 D 在 expert_types 层面切换。`irrad_anchor` 实证有害（默认关），作负结果对照。`aux` 为可解释 5 图预留接口（Part 3 §3）。
+
+### 3.8b `src/stacking.py`（模块 E，互补 stacking — SOTA 最终模型）
+
+**`run_stacking(cfg, sid, seed)`**：训深度 MoE（JointTrainer）+ RF（日前多步），在验证集按 RMSE 拟合凸组合权重 `w*∈[0,1]`，测试集用固定 `w*` 评估 `y=w*·deep+(1-w*)·rf`。
+- `fit_blend_weight(deep_val, rf_val, true_val, day_val, cap)`：val 上 0.05 步长扫 w，取 RMSE 最小。
+- 落 `results/stack_{sid}_seed{seed}.json`：含 deep/rf/stack 三者全指标 + `blend_weight`，顶层字段=stack。
+- 被 `src.run stack` 子命令 / `scripts/train_main.sh` 调用。
+
+> 依据（RQ4）：深度模型与 RF 互补，凸组合稳定超越各自（station04 +1.4 ACC）。w* 仅 val 拟合，防泄漏。集成是 PV 文献达 SOTA 标准手段 [6]。
 
 ### 3.9 `src/models/losses.py`
-
-**`corrector_loss(x_corr_paired, lmd_paired, mask) -> Tensor`**
-- 公式：$\mathcal{L}_{corr}=\frac1n\sum\|x^{corr}-x^{lmd}\|^2$（仅白天 mask）。
-- 输入：[B,T,d_p]，输出标量。
 
 **`prediction_loss(y_hat, y, is_day) -> Tensor`**
 - 公式：$\mathcal{L}_{pred}=\frac1n\sum(\hat p-p)^2$（白天 mask）。
 
-> idea_report 3.6/3.7：两损失对应两阶段。仅白天计入，符合光伏惯例。
+**`corrector_loss(x_corr_irrad, lmd_irrad, big_err_mask, gamma_delta, beta) -> Tensor`**
+- 公式：$\mathcal{L}_{corr}=\dfrac{\sum_t m_t(x^{corr}_t-x^{lmd}_t)^2}{\sum_t m_t} + \beta\cdot\frac1n\sum_t(\gamma_t\Delta_t)^2$。
+- 第一项仅在大误差区掩码 `m_t` 计入（订正监督），第二项为幅度惩罚（抑制乱订正）。
 
-### 3.10 `src/trainers/corrector_trainer.py`（阶段一）
+**总损失**（joint_trainer 内）：$\mathcal{L}=\mathcal{L}_{pred}+\lambda\mathcal{L}_{corr}$。
 
-**`CorrectorTrainer`**：fit 订正器，监督 = train 段 LMD，早停于 val L_corr，存 `results/checkpoints/corrector_{sid}.pth`。
+> idea_report 3.6/3.7：单阶段联合，订正以辅助损失形式服务预测。仅白天计入，符合光伏惯例。
 
-### 3.11 `src/trainers/predictor_trainer.py`（阶段二）
+### 3.10 `src/trainers/joint_trainer.py`（单阶段端到端联合）
 
-**`PredictorTrainer`**：加载并**冻结**订正器，训练专家+门控，监督 L_pred，早停于 val，存 `results/checkpoints/best_{sid}.pth`。
-- config `finetune_corrector`（bool，默认False）控制是否解冻订正器微调。
+**`JointTrainer`**：一次性训练订正器+异质专家+可学习门控，最小化 $\mathcal{L}=\mathcal{L}_{pred}+\lambda\mathcal{L}_{corr}$，早停于 val L_pred，存 `results/checkpoints/best_{sid}.pth`。
+- config `loss.lambda_corr`（订正辅助权重，默认 0.1）、`corrector.beta`（幅度惩罚，默认 0.01）、`corrector.big_err_quantile`（大误差区阈值分位，默认 0.6）。
+- 大误差区掩码 `m_t` 在 train 段按辐照误差分位预计算（dataset 提供），随 batch 取出。
 
-> idea_report 3.7：两阶段（先订正后预测，冻结）便于逐组件消融。⚠️ finetune 选项待实验定夺。
+> idea_report 3.7：单阶段联合替代原两阶段冻结——订正梯度同时回传，使订正以降低功率误差为目标。删除原 corrector_trainer/predictor_trainer。
 
 ### 3.12 `src/utils/metrics.py`
 
@@ -305,37 +329,58 @@ code/
 | `data.split` | data | [0.7,0.1,0.2] | 时间顺序 |
 | `fcm.K` | fcm | 3 | 区制数（消融G扫2-5） |
 | `fcm.m` | fcm | 2.0 | 模糊度 |
-| `vmd.K_modes` | vmd | 5 | 模态数 |
-| `vmd.alpha` | vmd | 2000 | 带宽惩罚 |
-| `expert.type` | model | gru | gru/tcn |
-| `model.gate_mode` | model | soft | soft/hard（消融C） |
-| `model.single_expert` | model | false | 消融D |
-| `model.use_vmd` | model | true | 消融F关 |
-| `model.leak_vmd` | model | false | 消融E开（泄漏演示） |
-| `model.use_corrector` | model | true | 消融B关 |
-| `train.lr` | train | 1e-3 | Adam，Part3 §0.7 |
-| `train.batch_size` | train | 64 | 同上 |
-| `train.patience` | train | 10 | 早停 |
+| `model.expert_types` | model | [short_gru,long_tcn,freq] | 异质专家；消融D设为同构 |
+| `model.short_window` | model | 48 | 短窗GRU回看长度 |
+| `model.gate_mode` | model | soft | soft/hard（消融B） |
+| `model.learnable_gate` | model | true | 可学习残差门控；消融C关 |
+| `model.gate_hidden` | model | 64 | 门控 MLP 宽度 |
+| `model.expert_hidden` | model | 128 | 专家隐层（实证>128 无益）|
+| `model.single_expert` | model | false | 消融E（K=1） |
+| `model.use_corrector` | model | true | 消融F关 |
+| `model.irrad_anchor` | model | false | 辐照锚定头（消融I开，实证有害默认关）|
+| `model.leak_vmd` | model | false | 消融H开（全序列VMD泄漏演示） |
+| `corrector.beta` | corrector | 0.01 | 订正量幅度惩罚 |
+| `corrector.big_err_quantile` | corrector | 0.6 | 大误差区阈值分位 |
+| `loss.lambda_corr` | loss | 0.1 | 订正辅助损失权重 |
+| `loss.huber_delta` | loss | 0.0 | >0 用Huber（实证无益，默认MSE）|
+| `train.lr` | train | 3e-3 | Adam（调参定，高LR+cosine更优）|
+| `train.cosine_lr` | train | true | cosine 退火 |
+| `train.max_epochs` | train | 150 | 调参定 |
+| `train.batch_size` | train | 64 | Part3 §0.7 |
+| `train.patience` | train | 20 | 早停 |
 | `train.seeds` | train | [0,1,2,3,4] | 5种子均值±std |
 
-> 每个消融变体对应 `configs/ablation/{variant}.yaml`，仅覆盖相关开关。**每个开关都直通一个消融变体**，保证 Part 3 §2 全覆盖。
+> 每个消融变体对应 `configs/ablation/{variant}.yaml`，仅覆盖相关开关。**每个开关都直通一个消融变体**（B硬门控/C固定门控/D同构/E单专家/F w/o订正/F2盲目订正/G K敏感/H泄漏演示），保证 Part 3 §2 全覆盖。
 
 ### 3.15 `scripts/`
 
-- `preprocess.sh`：跑 preprocess.py 生成 data/processed/ + VMD 缓存。
-- `train_main.sh`：两阶段训本文方法（10站×5种子）。
-- `train_baselines.sh`：训强时序 SOTA + RF + 订正基线。
-- `ablation.sh`：循环 A–G config，汇总 `results/ablation/summary.csv`。
+- `preprocess.sh`：跑 preprocess.py 生成 data/processed/。
+- `train_main.sh`：**单阶段联合**训本文方法（10站×5种子）。
+- `train_baselines.sh`：训强时序 SOTA + RF（日前多步）+ 订正基线。
+- `ablation.sh`：循环 A–H config，汇总 `results/ablation/summary.csv`。
 - `evaluate.sh`：日前协议评估，出 eval json + predictions csv。
-- `interpret.sh`：加载最优模型，导出 aux 中间量，绘可解释 4 图到 `results/figures/`。
+- `interpret.sh`：加载最优模型，导出 aux 中间量（u/g/γ/各专家预测/订正前后），绘可解释 5 图。
 
 ### 3.16 `src/baselines/`
 
-**`ts_library_wrap.py`**：封装 Time Series Library 的 DLinear/Informer/PatchTST/iTransformer/TimesNet，统一 `forward(x)->[B,H]` 接口，统一超参（§0.7）。
-**`rf_baseline.py`**：历史功率 RF、RF+原始NWP（借鉴前身 `rf.py`）。
-**`correction_baselines.py`**：线性/均值订正、分位数映射 QM、RF 订正——产出订正后 NWP 再接预测器。
+**`dl_baselines.py`**：7个自包含深度学习 baseline，覆盖四大家族：
+- **RNN**：`LSTMForecaster`（双层LSTM）、`NWPLSTMBaseline`（Encoder-Decoder LSTM，消费未来NWP，与本文同信息量）
+- **Conv**：`LSTNetForecaster`（Conv+GRU+skip-GRU+AR），`TCNForecaster`（膨胀因果卷积，dilations=[1,4,16,64]）
+- **MLP-basis**：`NBEATSForecaster`（2栈×3块），`NHiTSForecaster`（池化尺度[1,4,16]，分层插值）
+- **Attention**：`CrossformerForecaster`（patch_size=16/stride=8 跨时间联合patch编码，简化版）
 
-> 接口与主模型一致，便于在评估脚本中替换。覆盖 Part 3 §1 三组对比。
+**`ts_library_wrap.py`**：统一训练/评估封装（Adam+cosine LR，patience=20早停）。`DL_MODELS` 调 `build_dl_model`（无外部依赖）；`TSLIB_MODELS` 调 `TSLibWrapper`（需 `TSLIB_PATH`）；NWP-aware 模型额外传 `b["x_nwp"][:, L:, :]`。
+
+**`rf_baseline.py`**：历史功率 RF、RF+（未来段）NWP，**必须采用日前 96 步协议**（§0.7），与主方法/强时序 SOTA 同口径。
+- **关键（2026-06-08 代码审查 E-8 修订）**：严禁用"前 1~4 个点的真实功率"做特征（`lag_1=power.shift(1)` 那种逐点/持续性预测）——那相当于预测 t 点时偷看了 t-1（15min 前）真值，是超短期而非日前，对深度 baseline 不公平、且违背日前定义。
+- **正确做法（直接多步）**：用 PVODDataset 同样的滑窗样本，把**历史窗口 [L] 的功率/历史NWP 展平 + 未来段 [H] 的 NWP 预报**拼成一条特征向量，RF **一次性回归未来 96 维**（`RandomForestRegressor` 原生支持多目标输出 Y[N,H]）。
+  - `rf_hist`：仅历史功率窗口（展平）→ 预测 [H]。
+  - `rf_nwp`：历史功率窗口 + 未来段 NWP 预报（展平）→ 预测 [H]。未来 NWP 是日前可得的合法输入。
+- 评估走 `day_ahead_rolling`（与主方法完全一致），仅白天、容量归一。
+
+**`correction_baselines.py`**：线性/均值订正、分位数映射 QM、RF 订正——产出订正后 NWP，评估订正质量（对 LMD）。此文件不涉及功率预测的日前协议，保持现状。
+
+> 接口与主模型一致，便于在评估脚本中替换。覆盖 Part 3 §1 三组对比。**所有功率预测类 baseline 一律日前 96 步同口径，这是公平对比的前提。**
 
 ---
 
@@ -422,7 +467,7 @@ code/data/
 
 | 字段 | 含义 |
 |-----|------|
-| variant | A–G（对应 ablation.sh --variant） |
+| variant | A–H（对应 ablation.sh --variant） |
 | acc_mean / acc_std | 10站×5种子 ACC 均值±标准差 |
 | rmse_mean / mae_mean / r2_mean | 其他指标均值 |
 | delta_acc | 相对完整模型A的ΔACC |
@@ -430,12 +475,13 @@ code/data/
 
 ### 5.6 可解释中间量 `results/figures/` + `results/interpret/`
 - `regime_membership_{sid}.csv`：u(t) 时序（图1）
-- `expert_weight_heatmap.csv`：天气×专家权重（图2）
-- `correction_compare_{sid}.csv`：订正前/后/LMD（图3）
-- `case_{sunny|cloudy}.csv`：单日各专家预测+权重（图4）
-- 对应 PNG 存 `results/figures/fig{1-4}_*.png`
+- `expert_weight_heatmap.csv`：天气×最终门控 g 权重（图2）
+- `correction_compare_{sid}.csv`：订正前/后/LMD + 残差门控 γ（图3）
+- `case_{sunny|cloudy}.csv`：单日各专家预测+门控权重（图4）
+- `gate_entropy_acc.csv`：隶属熵分层 软vs硬门控 ACC（图5，RQ3）
+- 对应 PNG 存 `results/figures/fig{1-5}_*.png`
 
-> 这些由 interpret.sh 从 gated_moe 的 `aux` 导出，对应 Part 3 §3 四图。
+> 这些由 interpret.sh 从 gated_moe 的 `aux`（u/g/γ/各专家预测/订正前后）导出，对应 Part 3 §3 五图。
 
 ---
 
@@ -445,23 +491,22 @@ code/data/
 requirements.txt
   → configs/default.yaml
   → README.md（初稿：项目内容+环境，运行命令占位）
-  → src/utils/（seed, metrics, logger）
+  → src/utils/（seed, metrics, logger, config）
   → src/data/preprocess.py  → scripts/preprocess.sh（先把数据跑通）
   → src/data/transforms.py
   → src/data/fcm_regime.py
-  → src/data/causal_vmd.py
-  → notebooks/01_data_demo.ipynb（数据/FCM区制/VMD 可视化）
-  → src/data/pvod_dataset.py
-  → src/models/corrector.py
-  → src/models/experts.py
-  → src/models/gated_moe.py
-  → src/models/losses.py
-  → notebooks/02_model_demo.ipynb（结构/订正前后）
-  → src/trainers/corrector_trainer.py
-  → src/trainers/predictor_trainer.py
-  → src/baselines/（ts_library_wrap, rf_baseline, correction_baselines）
+  → src/data/causal_vmd.py（仅消融H保留）
+  → notebooks/01_data_demo.ipynb（数据/FCM区制 可视化）
+  → src/data/pvod_dataset.py（含大误差区掩码预计算；删 VMD 主流程依赖）
+  → src/models/corrector.py（自适应辐照订正 + 残差门控）
+  → src/models/experts.py（异质：short_gru/long_tcn/freq）
+  → src/models/gated_moe.py（可学习软门控）
+  → src/models/losses.py（L_pred + L_corr 含大误差区+幅度惩罚）
+  → notebooks/02_model_demo.ipynb（结构/订正前后/门控）
+  → src/trainers/joint_trainer.py（单阶段联合 L=L_pred+λL_corr）
+  → src/baselines/（ts_library_wrap, rf_baseline 日前多步, correction_baselines）
   → scripts/（train_main, train_baselines, ablation, evaluate, interpret）
-  → notebooks/03_results_demo.ipynb（主表/消融/泄漏演示/可解释4图）
+  → notebooks/03_results_demo.ipynb（主表/消融/泄漏演示/可解释5图）
 ```
 
 每完成一个文件，立即在 `docs/dev_log.md` 更新进度与日志；影响运行/环境的同步更新 `README.md`，关键步骤同步补 `notebooks/`。

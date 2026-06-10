@@ -17,9 +17,9 @@ SEEDS=(0 1 2 3 4)
 
 for sid in "${STATIONS[@]}"; do
   for seed in "${SEEDS[@]}"; do
-    echo "==== train $sid seed=$seed ${GPU:+(gpu=$GPU)} ===="
-    python -m src.run train    --config configs/default.yaml --station "$sid" --seed "$seed" $GPU_ARG
-    python -m src.run evaluate --config configs/default.yaml --station "$sid" --seed "$seed" $GPU_ARG
+    echo "==== stack $sid seed=$seed ${GPU:+(gpu=$GPU)} ===="
+    # stack = 训深度MoE + RF，验证集拟合凸组合权重，评估 stacking（本文 SOTA 最终模型）
+    python -m src.run stack --config configs/default.yaml --station "$sid" --seed "$seed" $GPU_ARG
   done
 done
-echo "主方法训练+评估完成。"
+echo "主方法（stacking）训练+评估完成 → results/stack_*.json"

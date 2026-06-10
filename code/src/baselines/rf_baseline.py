@@ -1,64 +1,73 @@
-"""RF 基线：历史功率 RF、RF+原始 NWP（前身基线，新 7:1:2 划分下重跑）。
+"""RF 基线：历史功率 RF、RF+未来段 NWP —— **日前 96 步直接多步**，与主方法同口径。
 
-借鉴前身 code/rf.py 的特征工程与 RF 训练，但：
-  - 划分改为 7:1:2 时间顺序（与主方法一致，公平可比）；
-  - 评估口径走 src.utils.metrics（仅白天，容量归一）；
-  - 直接做日前形式：用历史特征预测，逐点回归后按测试段整体评估。
+E-8 修订（2026-06-08）：原实现用 lag_1..4=前几个点的真实功率做逐点回归，相当于预测 t
+点时偷看 t-1（15min 前）真值，是超短期/持续性预测，对日前深度 baseline 不公平。
+现改为日前直接多步：复用 PVODDataset 的滑窗样本（与主方法完全相同的 split/样本/评估），
+把历史窗口（+可选未来段 NWP 预报）展平成特征，RF 一次性回归未来 96 维。
+
+  - rf_hist：仅历史功率窗口 [L] 展平 → 预测 [H]。
+  - rf_nwp ：历史功率窗口 [L] + 未来段 NWP 预报 [H, d_nwp] 展平 → 预测 [H]。
+评估走 day_ahead_rolling（仅白天、容量归一），与主方法一致。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import time
 
 import numpy as np
-import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 
+from ..trainers.build import build_station_data
 from ..utils import metrics as M
 from ..utils.config import load_config
-from ..trainers.build import load_capacity
 
 
-def _features(df: pd.DataFrame, use_nwp: bool) -> pd.DataFrame:
-    """构造 RF 特征（因果 lag/滑动统计 + 可选原始 NWP）。"""
-    out = df.copy()
-    out["date_time"] = pd.to_datetime(out["date_time"])
-    out["hour"] = out["date_time"].dt.hour
-    for lag in range(1, 5):
-        out[f"lag_{lag}"] = out["power"].shift(lag)
-    w = 4
-    shifted = out["power"].shift(w - 1)
-    for i in range(1, 5):
-        out[f"rcr_{i}"] = (shifted.rolling(w).max().shift((i - 1) * 2)
-                           - shifted.rolling(w).min().shift((i - 1) * 2)) / (w - 1)
-    cols = ["hour"] + [f"lag_{l}" for l in range(1, 5)] + [f"rcr_{i}" for i in range(1, 5)]
-    if use_nwp:
-        nwp_cols = [c for c in df.columns if c.startswith("nwp_")]
-        cols += nwp_cols
-    out = out.fillna(0.0)
-    return out[["date_time", "power", "is_day"] + cols], cols
+def _collect_xy(ds, use_nwp: bool):
+    """从 PVODDataset 取全部样本，展平为 RF 特征矩阵 X 与多输出标签 Y。
+
+    历史功率窗口：x_hist 的第 0 列（power，归一化）[L]。
+    未来段 NWP：x_nwp 的未来 H 段 [H, d_nwp]（日前可得）。
+
+    Returns:
+        X [N, F], Y [N, H], is_day [N, H]
+    """
+    L = ds.L
+    Xs, Ys, Ds = [], [], []
+    for i in range(len(ds)):
+        s = ds[i]
+        x_hist = s["x_hist"].numpy()           # [L, d_hist]，第0列为历史功率
+        x_nwp = s["x_nwp"].numpy()             # [L+H, d_nwp]
+        y = s["y"].numpy()                     # [H]
+        d = s["is_day"].numpy()                # [H]
+        feat = [x_hist[:, 0]]                   # 历史功率 [L]
+        if use_nwp:
+            feat.append(x_nwp[L:, :].reshape(-1))  # 未来段 NWP 预报展平 [H*d_nwp]
+        Xs.append(np.concatenate(feat))
+        Ys.append(y)
+        Ds.append(d)
+    return np.stack(Xs), np.stack(Ys), np.stack(Ds)
 
 
 def run_rf(cfg, sid, use_nwp: bool, tag: str):
-    proc = cfg["data"]["processed_dir"]
-    df = pd.read_csv(os.path.join(proc, f"{sid}.csv"))
-    feat_df, cols = _features(df, use_nwp)
+    # 复用主方法的数据装配，保证 split/样本/归一化/容量完全同口径
+    datasets, meta = build_station_data(cfg, sid)
+    normalizer = meta["normalizer"]
+    cap = meta["capacity"]
 
-    n = len(feat_df)
-    r_tr, r_va, _ = cfg["data"]["split"]
-    i_tr = int(n * r_tr)
-    i_va = int(n * (r_tr + r_va))
-    train = feat_df.iloc[:i_tr]
-    test = feat_df.iloc[i_va:]
+    Xtr, Ytr, _ = _collect_xy(datasets["train"], use_nwp)
+    Xte, Yte, Dte = _collect_xy(datasets["test"], use_nwp)
 
+    # RandomForestRegressor 原生支持多目标输出（Y [N, H]），一片森林同时回归 96 维，
+    # 等价于但远快于 MultiOutputRegressor 包 96 个独立森林。
     model = RandomForestRegressor(n_estimators=100, random_state=cfg["seed"], n_jobs=-1)
-    model.fit(train[cols].values, train["power"].values)
-    pred = model.predict(test[cols].values)
+    model.fit(Xtr, Ytr)
+    pred = model.predict(Xte)                  # [N, H]，归一化空间
 
-    cap = load_capacity(os.path.join(cfg["data"]["raw_dir"], "metadata.csv"), sid)
-    res = M.compute_all(pred, test["power"].values, cap, test["is_day"].values)
+    # 反归一化到 kW，再走日前协议评估（与主方法一致）
+    pred_kw = normalizer.inverse("power", pred)
+    true_kw = normalizer.inverse("power", Yte)
+    res = M.day_ahead_rolling(pred_kw, true_kw, Dte, cap, cfg["data"]["horizon"])
     res.update({"station": sid, "split": "test", "model": tag})
 
     eval_dir = os.path.join(cfg["paths"]["eval"], "baselines", tag)
@@ -66,7 +75,7 @@ def run_rf(cfg, sid, use_nwp: bool, tag: str):
     out = os.path.join(eval_dir, f"eval_{sid}.json")
     with open(out, "w") as f:
         json.dump(res, f, indent=2)
-    print(f"[rf:{tag}] {sid}: ACC={res['acc']:.3f} → {out}")
+    print(f"[rf:{tag}] {sid}: ACC={res['acc']:.3f} RMSE={res['rmse']:.4f} → {out}")
     return res
 
 

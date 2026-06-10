@@ -1,3 +1,0 @@
-# 变体 F：w/o VMD 特征（RQ3）
-model:
-  use_vmd: false

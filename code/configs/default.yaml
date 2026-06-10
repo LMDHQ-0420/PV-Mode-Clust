@@ -19,39 +19,43 @@ fcm:                          # 模块 A：FCM 软天气区制
   error: 0.005
   maxiter: 1000
 
-vmd:                          # 模块 C1：因果滑窗 VMD
-  K_modes: 5                  # 模态数
-  alpha: 2000                 # 带宽惩罚
-  tau: 0.0                    # 噪声容忍（vmdpy）
-  DC: 0                       # 不强制 DC 分量
-  init: 1                     # 均匀初始化中心频率
+vmd:                          # 仅消融 H（全序列 VMD 泄漏演示）使用
+  K_modes: 5
+  alpha: 2000
+  tau: 0.0
+  DC: 0
+  init: 1
   tol: 1.0e-7
-  window: 192                 # 滑窗长（默认 = look_back）
-  stride: 1
-  vmd_source: power           # 对历史功率做因果 VMD
 
-model:
-  expert:
-    type: gru                 # gru / tcn（消融 / 加分）
-    hidden: 64
-    num_layers: 1
-    tcn_kernel: 3
-    tcn_levels: 3
+model:                        # 可学习软门控异质 MoE
+  expert_types: [local_conv, dilated_tcn, direct_mlp]  # 异质专家（以未来NWP为主序列）
+  expert_hidden: 128
+  short_window: 48
   corrector_hidden: 128
-  gate_mode: soft             # soft / hard（消融 C）
-  single_expert: false        # 消融 D（K=1 单专家）
-  use_vmd: true               # 消融 F 关
-  leak_vmd: false             # 消融 E 开（全序列 VMD 泄漏演示）
-  use_corrector: true         # 消融 B 关
+  gate_mode: soft             # soft / hard（消融 B）
+  learnable_gate: true        # FCM先验+可学习残差；消融 C 关
+  gate_hidden: 64
+  single_expert: false        # 消融 E（K=1）
+  use_corrector: true         # 消融 F 关
+  irrad_anchor: false         # 辐照锚定物理头（实证有害，默认关；消融 I 开作对照）
+  leak_vmd: false             # 消融 H 开（全序列 VMD 泄漏演示）
+
+corrector:                    # 自适应辐照订正
+  beta: 0.01                  # 订正量幅度惩罚 β(γΔ)²
+  big_err_quantile: 0.6       # 大误差区阈值分位（train 段白天辐照误差）
+
+loss:
+  lambda_corr: 0.1            # 订正辅助损失权重 L=L_pred+λL_corr
+  huber_delta: 0.0            # >0 用 Huber（鲁棒），0=MSE
 
 train:
-  lr: 1.0e-3                  # Adam，Part3 §0.7
+  lr: 3.0e-3                  # Adam（调参定：高 LR + cosine 更优）
   batch_size: 64
-  patience: 10                # 早停
-  max_epochs: 100
+  patience: 20                # 早停
+  max_epochs: 150
   weight_decay: 0.0
   grad_clip: 5.0
-  finetune_corrector: false   # 第二阶段是否解冻订正器（默认冻结）
+  cosine_lr: true             # cosine 退火
   seeds: [0, 1, 2, 3, 4]      # 5 种子均值±std
   device: cuda
 

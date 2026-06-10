@@ -1,5 +1,5 @@
 # 开发日志 — 天气区制感知与 NWP 误差订正的软门控多专家光伏日前功率预测
-> 创建时间：2026-06-08 | 最后更新：2026-06-08
+> 创建时间：2026-06-08 | 最后更新：2026-06-10
 > 关联实现指南：docs/implementation.md
 
 ## 项目概览
@@ -121,7 +121,72 @@
 - **验证**：preprocess 重跑 10 站通过；残留引用扫描无对老脚本的 import/调用。
 - **关键事实**：借鉴逻辑（评估指标/FCM/VMD/extract_features）早已内化进 src/，删老脚本不丢信息。
 
+### 2026-06-08 — E-8 回溯：实证诊断 + 文献精读 + idea 重塑（阶段B）
+- **实证诊断**（station04/05 同口径对照 + 消融）：
+  - 修复 RF baseline 口径（原偷看前15min真值→改日前96步多步），公平后 RF+NWP 88.4/82.0、本文 87.3/80.9、DLinear 83.9/78.2、RF仅历史 84.6/77.4。本文胜 DLinear/RF-hist 但微输 RF+NWP。
+  - 关键消融：B w/o订正 ΔACC +0.8(大站)/−0.2（订正有害/无效）；C 硬门控 −1.0/−1.1（软门控有效✅）；D 单专家 +0.3/−0.3（多专家塌缩）；F w/o VMD +0.37/−0.05（VMD无增益）。
+- **文献精读**（3 组并行，docs/papers/）：订正类(AE2024/EAAI2025/RE2025/E&B2024)、VMD类(VMDNet/EMD泄漏)、MoE类(MoWE/TimeExpert/Wind/IDS-Net)。结论：成功MoE靠可学门控+异质专家；成功订正靠端到端联合+仅辐照+仅大误差区；分解因果化后增益蒸发。
+- **idea 重塑（阶段B，已改 idea_report Part1/2）**：
+  - 标题/RQ 重构：核心从"NWP订正"改为"可学习软门控异质MoE"（RQ1主），订正降为端到端辅助机制（RQ2），可解释决策支持（RQ3）；删因果VMD主线（仅留泄漏演示消融）。
+  - Method 重写：A FCM软区制(留)；B 自适应订正(只辐照+大误差区掩码+残差门控+幅度约束+端到端辅助损失)；C 结构异质专家(短窗GRU/长窗TCN/频域)；D 可学习软门控(FCM先验+MLP残差, softmax)。总损失 L=L_pred+λL_corr，单阶段联合。
+  - 新增文献 [14]Wind MoE、[15]IDS-Net（标低置信度待核实出处）；修正 MoE 类引用编号。
+- **阶段C（已改 idea_report Part3）**：
+  - §0.7 训练设置改单阶段联合 L=L_pred+λL_corr；强调所有功率 baseline 日前96步同口径。
+  - §1 主实验：RF baseline 明确日前多步重跑（非逐点偷看真值）；本文方法描述更新。
+  - §2 消融重构：A完整/B硬门控/C固定门控/D同构专家/E单专家（均 RQ1）/F w/o订正/F2盲目订正（RQ2）/G K敏感/H全序列VMD泄漏演示（诚实性,不计精度排名）。删原"因果VMD作贡献"消融。
+  - §3 可解释：新增图5（软门控过渡带优势,按隶属熵分层,RQ3核心）；图2/3 更新为最终门控g/残差门控γ;导出中间量增加 g_k/γ_t。
+- **阶段D（已改 implementation.md，过校验）**：
+  - §1 树/表：删 causal_vmd 主流程（仅消融H）、corrector→自适应订正、experts→异质、trainers→单个 joint_trainer。
+  - §2 数据流：删 nu/VMD，加 big_err_mask；订正监督改 irrad_lmd。
+  - §3.5 dataset：加大误差区掩码预计算；§3.6 corrector：AdaptiveIrradCorrector(只辐照+残差门控γ)；
+    §3.7 experts：ShortGRU/LongTCN/Freq 异质；§3.8 gated_moe：可学习软门控 g=softmax(α·log u+MLP)；
+    §3.9 losses：L_corr 仅大误差区+幅度惩罚；§3.10 JointTrainer 单阶段 L=L_pred+λL_corr。
+  - §3.14 config：expert_types/learnable_gate/blind_correct/lambda_corr/beta/big_err_quantile 等新开关；
+    消融 A–H 全覆盖。§6 实现顺序同步。
+  - 校验：实验覆盖/逻辑一致/完整性 三项通过。
+- **下一步**：阶段E 改代码（按新 implementation）→ smoke → 在 station04/05 重跑对照确认是否翻盘。
+
 ## 给用户的运行提示（混合策略下用户负责的大跑）
-- 完整主实验：`bash scripts/train_main.sh`（10站×5种子，两阶段，首次会逐站建因果 VMD 缓存）。
+- 完整主实验：`GPU=N bash scripts/train_main.sh`（10站×5种子，单阶段联合）。
 - 全部消融：`bash scripts/ablation.sh`；baseline：`bash scripts/train_baselines.sh`
   （Informer 等需 `export TSLIB_PATH=/path/to/Time-Series-Library`）。
+
+### 2026-06-10 — 全10站最终验证 + E-7 代码审查
+
+#### 10站 × 5种子完整结果（日前96步，ACC%）
+
+| Station    | Deep  | RF    | Stack | w*   | Δ(S−RF) |
+|------------|-------|-------|-------|------|---------|
+| station00  | 89.87 | 91.57 | 92.04 | 0.34 | +0.48   |
+| station01  | 86.39 | 88.51 | 89.10 | 0.32 | +0.58   |
+| station02  | 88.25 | 90.32 | 90.70 | 0.21 | +0.39   |
+| station03  | 87.88 | 89.41 | 89.64 | 0.34 | +0.23   |
+| station04  | 81.37 | 82.10 | 83.49 | 0.40 | +1.38   |
+| station05  | 87.36 | 88.39 | 88.25 | 0.64 | −0.14   |
+| station06  | 91.53 | 93.38 | 92.80 | 0.65 | −0.58   |
+| station07  | 91.63 | 93.31 | 93.30 | 0.32 | −0.01   |
+| station08  | 88.74 | 90.31 | 90.59 | 0.34 | +0.27   |
+| station09  | 94.68 | 94.86 | 95.17 | 0.18 | +0.31   |
+| **MEAN**   | **88.77** | **90.22** | **90.51** | **0.37** | **+0.29** |
+
+- RMSE (mean): deep=0.1123, RF=0.0978, stack=0.0949；R²: deep=0.736, RF=0.800, stack=0.811
+- stack 在 8/10 站超越 RF（st05/st06 deep主导时 stacking 微降）；平均提升 +0.29 ACC
+- 种子稳定性：stack std 跨10站 3.11（低于 deep 3.46 / RF 3.44），stacking 同时压方差
+
+#### E-7 代码审查结论（high effort，3+角度）
+共 10 条候选，5 CONFIRMED / 2 PLAUSIBLE / 3 REFUTED，实际修复 2 处：
+
+1. **[修复] `build.py:67` `mc['expert_types']` 改 `.get()` 加默认值**
+   — 直接 bracket 访问在缺省config路径下会 KeyError；改 `mc.get("expert_types", ["local_conv","dilated_tcn","direct_mlp"])` 兜底。
+
+2. **[修复] `build.py:78` `irrad_anchor` 代码默认值 `True` 与 yaml 默认 `false` 不一致**
+   — 实验已证 irrad_anchor 有害（88.04→86.9 ACC）；代码侧默认值改 `False` 与 yaml 一致。
+
+3. **[无需修复] `corrector.py:54` `index_copy`**
+   — PyTorch 2.x 的 `Tensor.index_copy(dim, index, source)` 非原地方法存在；环境验证通过，10站跑通。
+
+4. **[无需修复] `gated_moe.py:109` `gate` shape `[B,1]` in single_expert**
+   — single_expert=True 时 n_experts=1，`[B,1]` 正确匹配；einsum 走 else 分支不涉及。
+
+5. **[设计权衡] stacking val 集与早停 val 集重叠（轻度数据泄漏）**
+   — blend_weight 在同一 val 集上拟合，存在轻度乐观偏差；现规模（10站×5种子）bias 可接受，记录备注。

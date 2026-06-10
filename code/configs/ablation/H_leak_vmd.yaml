@@ -1,0 +1,3 @@
+# 变体 H：全序列 VMD 泄漏演示（诚实性，不计精度排名）
+model:
+  leak_vmd: true

@@ -1,7 +1,9 @@
-# 变体 A：完整模型（与 default 一致，显式标注）
+# 变体 A：完整模型（与 default 一致）
 model:
   use_corrector: true
   gate_mode: soft
+  learnable_gate: true
   single_expert: false
-  use_vmd: true
+  expert_types: [local_conv, dilated_tcn, direct_mlp]
+  irrad_anchor: false
   leak_vmd: false
