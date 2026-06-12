@@ -1,8 +1,4 @@
-"""单阶段端到端联合训练：L = L_pred + λ·L_corr。
-
-E-8 重塑（2026-06-08）：替代原两阶段（先订正冻结再预测）。订正器、异质专家、可学习门控
-一起训练，订正梯度同时回传，使订正以"降低功率误差"为目标。早停于 val L_pred。
-"""
+"""端到端训练器：L = L_pred（仅预测损失，早停于 val L_pred）。"""
 from __future__ import annotations
 
 import os
@@ -11,7 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ..models.losses import corrector_loss, prediction_loss
+from ..models.losses import prediction_loss
 from ..utils import metrics as M
 
 
@@ -34,10 +30,7 @@ class JointTrainer:
         self.grad_clip = tc["grad_clip"]
         self.sched = (torch.optim.lr_scheduler.CosineAnnealingLR(self.opt, self.max_epochs)
                       if tc.get("cosine_lr", False) else None)
-        self.lambda_corr = cfg.get("loss", {}).get("lambda_corr", 0.1)
         self.huber_delta = cfg.get("loss", {}).get("huber_delta", 0.0)
-        self.beta = cfg.get("corrector", {}).get("beta", 0.01)
-        self.irrad_idx = model.corrector.irrad_idx if model.corrector is not None else 0
 
     def _run_epoch(self, ds, train: bool):
         loader = DataLoader(ds, batch_size=self.bs, shuffle=train)
@@ -48,13 +41,6 @@ class JointTrainer:
             b = {k: v.to(self.device) for k, v in batch.items()}
             y_hat, aux = self.model(b)
             loss = prediction_loss(y_hat, b["y"], b["is_day"], self.huber_delta)
-            # 订正辅助损失（仅当订正器启用且有 LMD 监督）
-            if self.model.use_corrector and aux["x_corr"] is not None:
-                corr_irrad = aux["x_corr"][:, :, self.irrad_idx]      # [B, L+H]
-                gd = (aux["gamma"][:, :, 0] * aux["delta"][:, :, 0])  # [B, L+H]
-                lc = corrector_loss(corr_irrad, b["irrad_lmd"], b["big_err_mask"],
-                                    gd, self.beta)
-                loss = loss + self.lambda_corr * lc
             if train:
                 self.opt.zero_grad()
                 loss.backward()
@@ -69,7 +55,8 @@ class JointTrainer:
         avg = tot / max(cnt, 1)
         val_acc = ""
         if not train and preds_all:
-            p = np.concatenate(preds_all); t = np.concatenate(trues_all)
+            p = np.concatenate(preds_all)
+            t = np.concatenate(trues_all)
             d = np.concatenate(day_all)
             val_acc = M.acc(p, t, capacity=1.0, is_day=d)
         return avg, val_acc
@@ -79,7 +66,6 @@ class JointTrainer:
         ckpt_dir = self.cfg["paths"]["checkpoints"]
         os.makedirs(ckpt_dir, exist_ok=True)
         ckpt = os.path.join(ckpt_dir, f"best_{self.sid}.pth")
-        # 早停按 val L_pred（不含订正辅助项，纯预测质量）
         for ep in range(1, self.max_epochs + 1):
             tr, _ = self._run_epoch(self.datasets["train"], True)
             if self.sched is not None:
@@ -87,8 +73,7 @@ class JointTrainer:
             with torch.no_grad():
                 va, va_acc = self._run_epoch(self.datasets["val"], False)
             if self.logger:
-                self.logger.log({"epoch": ep, "stage": "joint",
-                                 "train_loss": tr, "val_loss": va,
+                self.logger.log({"epoch": ep, "train_loss": tr, "val_loss": va,
                                  "val_acc": va_acc, "lr": self.opt.param_groups[0]["lr"]})
             if va < best_val - 1e-6:
                 best_val, bad = va, 0

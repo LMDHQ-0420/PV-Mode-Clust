@@ -1,6 +1,5 @@
 # 变体 A：完整模型（与 default 一致）
 model:
-  use_corrector: true
   gate_mode: soft
   learnable_gate: true
   single_expert: false

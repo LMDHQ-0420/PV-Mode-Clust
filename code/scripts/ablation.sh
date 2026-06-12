@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 批量消融 A–I（深度模型口径）：每个变体独立 ckpt/eval 目录，训练+评估后汇总到 summary.csv。
 # 用法：bash scripts/ablation.sh [station ...]   (缺省全 10 站，5 种子)
-# 注意：完整跑量大，建议先用单站验证：bash scripts/ablation.sh station00
+# 建议先单站验证：bash scripts/ablation.sh station00
 # 主表(deep/RF/stack)由 scripts/train_main.sh + summarize --mode main 产出，不在此。
 set -e
 cd "$(dirname "$0")/.."
@@ -23,12 +23,10 @@ VARIANTS=(
   "C:configs/ablation/C_fixed_gate.yaml:固定门控(RQ1)"
   "D:configs/ablation/D_homogeneous.yaml:同构专家(RQ1)"
   "E:configs/ablation/E_single_expert.yaml:单专家(RQ1)"
-  "F:configs/ablation/F_wo_corrector.yaml:w/o订正(RQ2)"
-  "F2:configs/ablation/F2_blind_correct.yaml:盲目订正(RQ2)"
-  "G2:configs/ablation/G_K2.yaml:K=2"
-  "G4:configs/ablation/G_K4.yaml:K=4"
-  "G5:configs/ablation/G_K5.yaml:K=5"
-  "I:configs/ablation/I_irrad_anchor.yaml:辐照锚定(RQ1负结果)"
+  "G2:configs/ablation/G_K2.yaml:K=2(RQ1)"
+  "G4:configs/ablation/G_K4.yaml:K=4(RQ1)"
+  "G5:configs/ablation/G_K5.yaml:K=5(RQ1)"
+  "I:configs/ablation/I_irrad_anchor.yaml:辐照锚定负结果(RQ1)"
   "H:configs/ablation/H_leak_vmd.yaml:全序列VMD泄漏(诚实性)"
 )
 
@@ -48,7 +46,7 @@ for entry in "${VARIANTS[@]}"; do
         --station "$sid" --seed "$seed" --ckpt_dir "$ckpt_dir" --eval_dir "$eval_dir" $GPU_ARG
     done
   done
-  python -m src.summarize --eval_dir "$eval_dir" --variant "$name" \
+  python -m src.summarize --mode ablation --eval_dir "$eval_dir" --variant "$name" \
     --notes "$note" --out_csv "$SUMMARY"
 done
 echo "消融完成 → $SUMMARY"

@@ -1,6 +1,0 @@
-# 变体 F2：盲目订正（RQ2）—— 订正整段(分位=0)+无幅度惩罚+大订正权重
-corrector:
-  big_err_quantile: 0.0
-  beta: 0.0
-loss:
-  lambda_corr: 1.0

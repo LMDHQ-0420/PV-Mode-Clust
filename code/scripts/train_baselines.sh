@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 训练所有 baseline：RF + 订正基线 + 自包含DL系 + TSLib系（可选）。
-# 统一日前96步同口径，10站×5种子。
+# 训练所有 baseline：RF + 自包含DL系 + TSLib系（可选）。
+# 统一日前 96 步同口径，10 站 × 5 种子。
 # 用法：bash scripts/train_baselines.sh [station ...]
 set -e
 cd "$(dirname "$0")/.."
@@ -24,11 +24,8 @@ TSLIB_MODELS=(Informer PatchTST iTransformer TimesNet)
 for sid in "${STATIONS[@]}"; do
   echo "==== baselines: $sid ===="
 
-  # RF 基线（无种子，确定性）
+  # RF 基线（确定性，无种子循环）
   python -m src.baselines.rf_baseline --config configs/default.yaml --station "$sid"
-
-  # 订正基线（无种子）
-  python -m src.baselines.correction_baselines --config configs/default.yaml --station "$sid"
 
   # 自包含 DL baselines（5 种子）
   for m in "${DL_MODELS[@]}"; do
@@ -39,7 +36,7 @@ for sid in "${STATIONS[@]}"; do
     done
   done
 
-  # TSLib 系（5 种子，需 TSLIB_PATH）
+  # TSLib 系（5 种子，需设置 TSLIB_PATH）
   if [ -n "$TSLIB_PATH" ]; then
     for m in "${TSLIB_MODELS[@]}"; do
       for s in "${SEEDS[@]}"; do
@@ -49,7 +46,11 @@ for sid in "${STATIONS[@]}"; do
       done
     done
   else
-    echo "[跳过 TSLib 模型] 未设置 TSLIB_PATH；如需运行请先: export TSLIB_PATH=/path/to/Time-Series-Library"
+    echo "[跳过 TSLib] 如需运行请先: export TSLIB_PATH=/path/to/Time-Series-Library"
   fi
 done
-echo "baseline 训练完成。"
+
+python -m src.summarize --mode baselines \
+  --eval_dir results/baselines \
+  --out_csv results/baselines_table.csv
+echo "baseline 完成 → results/baselines_table.csv"
